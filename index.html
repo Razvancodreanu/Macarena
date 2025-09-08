@@ -2,71 +2,181 @@
 <html lang="ro">
 <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Macarena · Live Location</title>
-    <link rel="stylesheet" href="./style.css" />
-    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-    <!-- Leaflet CSS -->
+
+    <link rel="stylesheet" href="style.css" />
+
+    <!-- Leaflet -->
     <link rel="stylesheet"
           href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          integrity="sha256-o88AwQnZB+VDvE+4r3gPqJfN5G9F2zOsyWvPZx2A0uU="
           crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQQchg0cglJ7ZGRkuZ/9VM+NkjnvAN1VlIZTBO="
+            crossorigin=""
+            defer></script>
+
+    <!-- Supabase -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
 </head>
-
 <body>
-    <header class="topbar">
-        <div class="brand">📍 Macarena • Live Location</div>
-        <div class="controls">
-            <input id="room" type="text" placeholder="ex: familia, echipa-42" />
-            <button id="join">Join</button>
-            <button id="share" class="secondary">Start sharing</button>
-            <button id="centerMe" class="secondary">Center me</button>
-        </div>
-    </header>
+    <div id="map"></div>
 
-    <main id="map"></main>
+    <!-- Sidebar (dreapta) -->
+    <aside class="sidebar">
+        <header class="sb-header">
+            <h1>Macarena · Live</h1>
+            <div class="brand-dot"></div>
+        </header>
 
-    <aside class="panel">
-        <h3>Autentificare</h3>
-        <p id="authStatus">Status: verific…</p>
+        <!-- Profil -->
+        <section class="card">
+            <h2>Profil</h2>
+            <div class="profile-row">
+                <img id="profilePhoto" class="avatar" alt="avatar" src="" />
+                <div class="profile-fields">
+                    <input id="profileName" class="input" placeholder="Nume și prenume" />
+                    <div class="file-row">
+                        <label class="btn btn-light">
+                            Încarcă poză
+                            <input id="photoInput" type="file" accept="image/*" hidden />
+                        </label>
+                        <button id="saveProfileBtn" class="btn">Salvează</button>
+                    </div>
+                </div>
+            </div>
+        </section>
 
-        <div class="auth">
-            <!-- OAuth Google -->
-            <button id="googleBtn" class="oauth google">
-                <svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true">
-                    <path fill="#EA4335" d="M24 9.5c3.35 0 6.36 1.15 8.73 3.41l6.55-6.55C35.63 2.5 30.2 0 24 0 14.6 0 6.53 5.37 2.56 13.17l7.64 5.93C12.01 13.61 17.53 9.5 24 9.5z" />
-                    <path fill="#4285F4" d="M46.5 24c0-1.56-.14-3.06-.41-4.5H24v9h12.7c-.55 2.93-2.2 5.42-4.7 7.08l7.2 5.57C43.9 37.9 46.5 31.45 46.5 24z" />
-                    <path fill="#FBBC05" d="M10.2 19.1l-7.64-5.93C.9 15.62 0 19.68 0 24c0 4.3.9 8.35 2.56 12.03l7.64-5.93C9.37 27.37 9 25.72 9 24s.37-3.37 1.2-4.9z" />
-                    <path fill="#34A853" d="M24 48c6.2 0 11.45-2.05 15.23-5.57l-7.2-5.57C29.88 38.2 27.16 39 24 39c-6.47 0-11.99-4.12-13.8-9.6l-7.64 5.93C6.53 42.63 14.6 48 24 48z" />
-                </svg>
-                Sign in with Google
-            </button>
+        <!-- Autentificare -->
+        <section class="card">
+            <h2>Autentificare</h2>
+            <div id="authStatus" class="muted">Neautentificat</div>
+            <div class="auth-row">
+                <button id="googleBtn" class="btn btn-google">Sign in with Google</button>
+                <button id="magicBtn" class="btn btn-light">Trimite magic link</button>
+            </div>
+            <div class="auth-row">
+                <input id="phoneInput" class="input" placeholder="+40 7xx xxx xxx" />
+                <button id="phoneOtpBtn" class="btn">SMS OTP</button>
+            </div>
+            <div class="auth-row">
+                <input id="otpInput" class="input" placeholder="Cod SMS" />
+                <button id="confirmOtpBtn" class="btn">Confirmă</button>
+            </div>
+            <button id="signOutBtn" class="btn btn-outline">Sign out</button>
+        </section>
 
-            <!-- Magic link -->
-            <input id="email" type="email" placeholder="email pentru magic link" />
-            <button id="sendLink">Trimite link</button>
+        <!-- Vizibilitate -->
+        <section class="card">
+            <h2>Mod vizibilitate</h2>
+            <label class="switch-row">
+                <input type="radio" name="visMode" value="global" checked />
+                <span>Global (toți utilizatorii)</span>
+            </label>
+            <label class="switch-row">
+                <input type="radio" name="visMode" value="room" />
+                <span>Cameră privată</span>
+            </label>
 
-            <button id="signOut" class="secondary">Sign out</button>
-        </div>
+            <div id="roomBlock" class="room-block hidden">
+                <div class="room-row">
+                    <input id="roomInput" class="input" placeholder="ex: familia, echipa-42" />
+                    <button id="joinBtn" class="btn">Join</button>
+                    <button id="leaveBtn" class="btn btn-outline">Leave</button>
+                </div>
+                <div class="row small">
+                    <button id="copyMagicLinkBtn" class="btn btn-light">Copy magic link</button>
+                    <input id="inviteLink" class="input readonly" readonly />
+                </div>
+            </div>
+        </section>
 
-        <hr />
-        <div>
-            Link de invitat pentru cameră:
-            <div class="linkbox"><code id="roomLink">—</code></div>
-        </div>
+        <!-- Share location -->
+        <section class="card">
+            <h2>Share location</h2>
+            <div class="row">
+                <button id="startBtn" class="btn btn-green">Start sharing</button>
+                <button id="stopBtn" class="btn btn-danger">Stop</button>
+            </div>
+            <div class="muted small">Telefonul/Browserul cere permisiunea de locație. Trimitere ~ la 5s dacă se schimbă.</div>
+        </section>
+
+        <!-- Alerte -->
+        <section class="card">
+            <h2>Alerte</h2>
+            <div class="row">
+                <button id="sosBtn" class="btn btn-sos" title="Apăsare scurtă: alege tipul; Apăsare lungă: SOS instant">SOS</button>
+                <span id="sosCountdown" class="sos-count hidden">3</span>
+                <button id="checkinBtn" class="btn btn-blue">Check-in</button>
+            </div>
+        </section>
+
+        <!-- Live / Membri -->
+        <section class="card">
+            <h2>Live · Membri</h2>
+            <div id="membersList" class="muted small">-</div>
+        </section>
+
+        <!-- Traseu -->
+        <section class="card">
+            <h2>Traseul tău în ultimele 24h</h2>
+            <button id="loadTrailBtn" class="btn btn-light">Încarcă</button>
+            <button id="clearTrailBtn" class="btn btn-outline">Curăță</button>
+        </section>
+
+        <footer class="sb-footer muted small">
+            schema: <code>macarena</code> · tables: <code>locations</code>, <code>locations_history</code>, <code>alerts</code>, <code>profiles</code>
+        </footer>
     </aside>
 
-    <footer class="statusbar">
-        <span id="roomStatus"></span>
-        <span id="shareStatus"></span>
-    </footer>
+    <!-- Modal tip alertă (pentru apăsare scurtă SOS) -->
+    <dialog id="alertModal" class="dialog">
+        <form method="dialog" class="dialog-body">
+            <h3>Selectează tipul alertei</h3>
+            <select id="alertTypeSelect" class="input">
+                <option value="SOS">SOS</option>
+                <option value="Răpire">Răpire</option>
+                <option value="Amenințare cu cuțit">Amenințare cu cuțit</option>
+                <option value="Viol">Viol</option>
+                <option value="Intimidare">Intimidare</option>
+                <option value="Agresiune fizică">Agresiune fizică</option>
+                <option value="Bătaie">Bătaie</option>
+                <option value="Urmăritor dubios">Urmăritor dubios</option>
+                <option value="Tentativă furt">Tentativă furt</option>
+                <option value="Furt">Furt</option>
+                <option value="Injurături">Injurături</option>
+            </select>
+            <div class="row end">
+                <button class="btn btn-outline" value="cancel">Anulează</button>
+                <button id="sendAlertBtn" class="btn" value="default">Trimite</button>
+            </div>
+        </form>
+    </dialog>
 
-    <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-            crossorigin=""></script>
+    <!-- Modal alertă primită -->
+    <dialog id="incomingAlertModal" class="dialog">
+        <form method="dialog" class="dialog-body">
+            <div class="alert-card">
+                <img id="iaPhoto" class="avatar lg" alt="user" />
+                <div class="alert-info">
+                    <h3 id="iaName">Nume</h3>
+                    <div class="pill" id="iaType">SOS</div>
+                    <div class="muted small" id="iaCoords">lat, lng</div>
+                    <div class="row">
+                        <button id="centerOnAlertBtn" class="btn btn-blue">Center pe hartă</button>
+                        <button class="btn" value="default">OK</button>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </dialog>
 
-    <!-- App -->
-    <script type="module" src="./app.js"></script>
+    <!-- Sunet alertă -->
+    <audio id="alertSound" preload="auto">
+        <source src="https://cdn.jsdelivr.net/gh/itsrealfarhan/sfx/siren-short.mp3" type="audio/mpeg" />
+    </audio>
+
+    <script src="app.js" defer></script>
 </body>
 </html>
