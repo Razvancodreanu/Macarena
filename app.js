@@ -399,3 +399,167 @@ el.centerMe.addEventListener('click', () => {
         joinRoom, startSharing, state: () => ({ joinedRoom, watchId, youMarker: !!youMarker })
     });
 })();
+/* ---------------- MACARENA GEO V2 (reliable) ---------------- */
+(() => {
+    if (window.__MACARENA_GEO_V2__) return;
+    window.__MACARENA_GEO_V2__ = true;
+
+    const $ = s => document.querySelector(s);
+    const on = (el, ev, fn, opt) => el && el.addEventListener(ev, fn, opt || { passive: true });
+
+    // Elemente (folosim aceleași ID-uri din UI-ul tău)
+    const btnShare = $('#share');
+    const btnCenter = $('#centerMe');
+    const outShare = $('#shareStatus') || { textContent: '' }; // fallback
+    const outRoom = $('#roomStatus') || { textContent: '' };
+
+    // Harta (reuse dacă există)
+    let map = window.__MACARENA_MAP__;
+    if (!map) {
+        map = L.map('map', { zoomControl: true });
+        window.__MACARENA_MAP__ = map;
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+        map.setView([45.754, 21.226], 13);
+        requestAnimationFrame(() => map.invalidateSize());
+        window.addEventListener('resize', () => map.invalidateSize());
+    }
+
+    // Layer-ul tău (mereu deasupra)
+    const youLayer = window.__YOU_LAYER__ || L.layerGroup().addTo(map);
+    window.__YOU_LAYER__ = youLayer;
+
+    let youMarker = null;
+    let youAcc = null;
+    let watchId = null;
+    let centeredOnce = false;
+
+    function logStatus(t) { outShare.textContent = t; console.debug('[MACARENA]', t); }
+
+    function upsertYou(lat, lng, acc) {
+        if (!youMarker) {
+            youMarker = L.marker([lat, lng], { zIndexOffset: 1000 }).addTo(youLayer);
+            youMarker.bindTooltip('Tu', { permanent: true, direction: 'top', offset: [0, -8] });
+        } else {
+            youMarker.setLatLng([lat, lng]);
+            youMarker.setZIndexOffset(1000);
+        }
+        if (!youAcc) {
+            youAcc = L.circle([lat, lng], { radius: acc || 25, weight: 1, fillOpacity: .08 });
+            youAcc.addTo(youLayer);
+        } else {
+            youAcc.setLatLng([lat, lng]);
+            if (acc) youAcc.setRadius(acc);
+        }
+        if (!centeredOnce) {
+            centeredOnce = true;
+            map.setView([lat, lng], Math.max(map.getZoom(), 16));
+        }
+    }
+
+    function startWatch() {
+        if (!('geolocation' in navigator)) {
+            logStatus('Geolocația nu este disponibilă în acest browser.');
+            return;
+        }
+        // dacă e deja pornit -> oprește (toggle)
+        if (watchId !== null) {
+            navigator.geolocation.clearWatch(watchId);
+            watchId = null;
+            btnShare && (btnShare.textContent = 'Start sharing');
+            btnShare && btnShare.setAttribute('aria-pressed', 'false');
+            logStatus('Sharing oprit.');
+            return;
+        }
+
+        centeredOnce = false;
+        btnShare && (btnShare.textContent = 'Stop sharing');
+        btnShare && btnShare.setAttribute('aria-pressed', 'true');
+        logStatus('Pornește sharing… acordă permisiunea de locație.');
+
+        // 1) Fix instant (o singură citire) ca să apară markerul imediat
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+                upsertYou(lat, lng, accuracy);
+                logStatus(`Fix inițial: ~${Math.round(accuracy)} m`);
+            },
+            (err) => {
+                console.warn('getCurrentPosition error', err);
+                // fallback: Leaflet locate (unele device-uri dau rateu la primul fix)
+                map.once('locationfound', (e) => {
+                    upsertYou(e.latlng.lat, e.latlng.lng, e.accuracy);
+                    logStatus(`Fix (fallback): ~${Math.round(e.accuracy)} m`);
+                });
+                map.once('locationerror', () => logStatus('Nu am putut obține o poziție inițială.'));
+                map.locate({ setView: false, enableHighAccuracy: true, timeout: 8000 });
+            },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+        );
+
+        // 2) Urmărire continuă
+        watchId = navigator.geolocation.watchPosition(
+            (pos) => {
+                const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+                upsertYou(lat, lng, accuracy);
+                logStatus(`Sharing activ • ~${Math.round(accuracy)} m`);
+            },
+            (err) => {
+                const msg = ({
+                    1: 'Acces la locație refuzat.',
+                    2: 'Poziția indisponibilă.',
+                    3: 'Timeout la obținerea poziției.'
+                }[err.code]) ||
+                    'Eroare necunoscută la geolocalizare.';
+                logStatus(msg);
+                // Nu lăsăm butonul în stare „Stop” dacă watch a căzut
+                btnShare && (btnShare.textContent = 'Start sharing');
+                btnShare && btnShare.setAttribute('aria-pressed', 'false');
+                watchId = null;
+            },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+        );
+    }
+
+    function centerMe() {
+        if (youMarker) {
+            map.setView(youMarker.getLatLng(), Math.max(map.getZoom(), 16), { animate: true });
+            return;
+        }
+        // Dacă nu e marker încă, ia o poziție unică și centrează
+        if ('geolocation' in navigator) {
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+                    upsertYou(lat, lng, accuracy);
+                    map.setView([lat, lng], Math.max(map.getZoom(), 16), { animate: true });
+                    logStatus(`Centrat pe fix unic • ~${Math.round(accuracy)} m`);
+                },
+                () => logStatus('Nu am putut centra – fără acces la locație.'),
+                { enableHighAccuracy: true, maximumAge: 10000, timeout: 8000 }
+            );
+        }
+    }
+
+    on(btnShare, 'click', startWatch);
+    on(btnCenter, 'click', centerMe);
+
+    // Permissions API – feedback imediat despre starea permisiunii
+    if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: 'geolocation' }).then((p) => {
+            const update = () => {
+                outRoom.textContent = `Permisiune locație: ${p.state}`; // info mic în UI
+                if (p.state === 'denied') logStatus('Permisiunea de locație este „Denied”. Mergi în setările browserului și permite.');
+            };
+            update();
+            p.onchange = update;
+        }).catch(() => { });
+    }
+
+    // Expunere pentru debug rapid
+    window.__macarena = Object.assign(window.__macarena || {}, {
+        centerMe, startWatch,
+        geoState: () => ({ watchId, hasMarker: !!youMarker })
+    });
+})();
