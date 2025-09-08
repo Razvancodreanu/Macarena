@@ -563,3 +563,324 @@ el.centerMe.addEventListener('click', () => {
         geoState: () => ({ watchId, hasMarker: !!youMarker })
     });
 })();
+
+
+/* ============ MACARENA: marker stabil + Public mode ============ */
+(() => {
+    if (window.__MACARENA_PUBLIC_V1__) return;
+    window.__MACARENA_PUBLIC_V1__ = true;
+
+    const $ = s => document.querySelector(s);
+    const on = (el, ev, fn, opt) => el && el.addEventListener(ev, fn, opt || { passive: true });
+
+    // Harta
+    const map = window.__MACARENA_MAP__;
+    if (!map) return console.warn('Map not ready.');
+
+    // Layere
+    const youLayer = window.__YOU_LAYER__ || L.layerGroup().addTo(map);
+    const peopleLayer = window.__PEOPLE_LAYER__ || L.layerGroup().addTo(map);
+    window.__YOU_LAYER__ = youLayer; window.__PEOPLE_LAYER__ = peopleLayer;
+
+    // ICONS
+    const youIcon = L.divIcon({
+        className: 'macarena-you',
+        html: '',
+        iconSize: [14, 14], iconAnchor: [7, 7], tooltipAnchor: [0, -10]
+    });
+    const userIcon = (label, opts = {}) => L.divIcon({
+        className: `macarena-user ${opts.sos ? 'macarena-sos' : ''}`,
+        html: (label || '').slice(0, 2),
+        iconSize: [22, 22], iconAnchor: [11, 11], tooltipAnchor: [0, -14]
+    });
+
+    // STARE
+    let watchId = null;
+    let youMarker = null, youAcc = null, lastPos = null;
+    let joinedRoom = (new URLSearchParams(location.search).get('room')) || localStorage.getItem('macarena.room') || 'public';
+
+    // UI existente
+    const btnShare = $('#share');
+    const btnCenter = $('#centerMe');
+    const inpRoom = $('#room');
+    const statusOut = $('#shareStatus') || { textContent: '' };
+    const roomOut = $('#roomStatus') || { textContent: '' };
+
+    // ——— Public by default (toți văd pe toți) ———
+    if (inpRoom && !inpRoom.value) inpRoom.value = joinedRoom;
+    roomOut.textContent = `Camera: ${joinedRoom} (public înseamnă vizibil tuturor)`;
+
+    // Local render pt „TU”
+    function upsertYou(lat, lng, acc) {
+        lastPos = { lat, lng, acc };
+        if (!youMarker) {
+            youMarker = L.marker([lat, lng], { icon: youIcon, zIndexOffset: 1000 }).addTo(youLayer);
+            youMarker.bindTooltip('Tu', { permanent: true, direction: 'top', offset: [0, -10] });
+        } else {
+            youMarker.setLatLng([lat, lng]);
+        }
+        if (!youAcc) {
+            youAcc = L.circle([lat, lng], { radius: acc || 25, weight: 1, fillOpacity: .08 });
+            youAcc.addTo(youLayer);
+        } else {
+            youAcc.setLatLng([lat, lng]); if (acc) youAcc.setRadius(acc);
+        }
+    }
+
+    // „Center me” – funcționează și fără share pornit (folosește fix unic)
+    function centerMe() {
+        if (lastPos) {
+            map.setView([lastPos.lat, lastPos.lng], Math.max(map.getZoom(), 16), { animate: true });
+            return;
+        }
+        if ('geolocation' in navigator) {
+            navigator.geolocation.getCurrentPosition(
+                p => {
+                    const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
+                    map.setView([c.latitude, c.longitude], 16, { animate: true });
+                    statusOut.textContent = `Centrat (~${Math.round(c.accuracy)} m)`;
+                },
+                () => statusOut.textContent = 'Nu am putut centra (permisiune?).',
+                { enableHighAccuracy: true, maximumAge: 10000, timeout: 8000 }
+            );
+        }
+    }
+
+    // Start/Stop sharing – mai robust (fix instant + watch)
+    function toggleShare() {
+        if (!('geolocation' in navigator)) {
+            statusOut.textContent = 'Geolocație indisponibilă.';
+            return;
+        }
+        if (watchId !== null) {
+            navigator.geolocation.clearWatch(watchId); watchId = null;
+            btnShare && (btnShare.textContent = 'Start sharing', btnShare.setAttribute('aria-pressed', 'false'));
+            statusOut.textContent = 'Sharing oprit.'; return;
+        }
+
+        btnShare && (btnShare.textContent = 'Stop sharing', btnShare.setAttribute('aria-pressed', 'true'));
+        statusOut.textContent = 'Pornește share…';
+
+        // 1) fix instant
+        navigator.geolocation.getCurrentPosition(
+            p => {
+                const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
+                if (!map.__centeredOnce) { map.__centeredOnce = true; map.setView([c.latitude, c.longitude], 16); }
+                statusOut.textContent = `Fix inițial (~${Math.round(c.accuracy)} m)`; publishSelf();
+            },
+            e => { console.warn('getCurrentPosition', e); statusOut.textContent = 'Nu am putut lua fix-ul inițial.'; },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+        );
+
+        // 2) urmărește continuu
+        watchId = navigator.geolocation.watchPosition(
+            p => {
+                const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
+                statusOut.textContent = `Sharing activ • ~${Math.round(c.accuracy)} m`; publishSelf();
+            },
+            e => {
+                const txt = ({ 1: 'Acces refuzat', 2: 'Indisponibil', 3: 'Timeout' })[e.code] || 'Eroare geo';
+                statusOut.textContent = txt; btnShare && (btnShare.textContent = 'Start sharing', btnShare.setAttribute('aria-pressed', 'false')); watchId = null;
+            },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+        );
+    }
+
+    on(btnCenter, 'click', centerMe);
+    on(btnShare, 'click', toggleShare);
+
+    /* ---------- TRANSPORT ---------- 
+       0) fallback local (fără backend): BroadcastChannel – merge între tab-urile tale.
+       1) real-time pentru toți: vezi blocul SUPABASE de mai jos (rapid, non-Firebase).
+    */
+    const chanName = `macarena:${joinedRoom || 'public'}`;
+    const bc = ('BroadcastChannel' in window) ? new BroadcastChannel(chanName) : null;
+
+    function publishSelf(kind = 'pos') {
+        if (!lastPos) return;
+        const payload = {
+            kind,
+            id: localStorage.getItem('macarena.uid') || (() => {
+                const id = Math.random().toString(36).slice(2);
+                localStorage.setItem('macarena.uid', id); return id;
+            })(),
+            name: (localStorage.getItem('macarena.name') || '').slice(0, 2).toUpperCase(),
+            lat: lastPos.lat, lng: lastPos.lng, acc: lastPos.acc || null, t: Date.now()
+        };
+        // BroadcastChannel (dev)
+        bc && bc.postMessage(payload);
+        // Supabase/Ably/etc. – vezi mai jos (enable când adaugi chei)
+        supa.publish(payload); // no-op dacă nu e configurat
+    }
+
+    // Render „alți utilizatori”
+    const others = new Map(); // id -> { marker, accCircle, last }
+    function renderOther(msg) {
+        if (!msg || msg.id === localStorage.getItem('macarena.uid')) return;
+        const key = msg.id;
+        const label = msg.name || 'U';
+        const pos = L.latLng(msg.lat, msg.lng);
+        let entry = others.get(key);
+        if (!entry) {
+            const m = L.marker(pos, { icon: userIcon(label, { sos: msg.kind === 'sos' }), zIndexOffset: 900 }).addTo(peopleLayer);
+            m.bindTooltip(label, { permanent: true, direction: 'top', offset: [0, -12] });
+            const c = L.circle(pos, { radius: msg.acc || 25, weight: 1, fillOpacity: .05 }).addTo(peopleLayer);
+            entry = { marker: m, acc: c, last: msg };
+            others.set(key, entry);
+        } else {
+            entry.marker.setLatLng(pos);
+            entry.marker.setIcon(userIcon(label, { sos: msg.kind === 'sos' }));
+            entry.acc.setLatLng(pos); if (msg.acc) entry.acc.setRadius(msg.acc);
+            entry.last = msg;
+        }
+    }
+
+    bc && (bc.onmessage = (e) => renderOther(e.data));
+
+    // ——— SUPABASE (opțional, pt. „1000 logați”) ———
+    // Completează SUPABASE_URL și SUPABASE_ANON_KEY și apoi creează tabelul:
+    // SQL: create table if not exists positions (room text, id text, name text, lat double precision, lng double precision, acc double precision, kind text, t bigint);
+    //      create index on positions (room, t desc);
+    //      -- RLS permis doar insert/select pe "room = 'public'" (sau după nevoi).
+    const supa = (() => {
+        const SUPABASE_URL = '';      // <- pune url-ul proiectului tău
+        const SUPABASE_KEY = '';      // <- pune anon key
+        if (!SUPABASE_URL || !SUPABASE_KEY) return { publish() { }, ready: false };
+        // mini client fără SDK mare
+        const headers = { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` };
+        async function publish(payload) {
+            try {
+                await fetch(`${SUPABASE_URL}/rest/v1/positions`, {
+                    method: 'POST', headers, body: JSON.stringify([{ room: joinedRoom, ...payload }])
+                });
+            } catch (e) { console.warn('supa publish', e); }
+        }
+        // stream realtime (channel)
+        // Notă: dacă preferi, poți folosi supabase-js pentru .channel('realtime:public:positions')
+        // Aici, pentru simplitate, facem polling ușor (merge la 1000 useri cu index corect).
+        let lastT = Date.now() - 1000 * 60;
+        setInterval(async () => {
+            try {
+                const q = new URLSearchParams({
+                    select: 'id,name,lat,lng,acc,kind,t',
+                    room: `eq.${joinedRoom}`,
+                    t: `gt.${lastT}`,
+                    order: 't.desc',
+                    limit: '1000'
+                });
+                const res = await fetch(`${SUPABASE_URL}/rest/v1/positions?${q}`, { headers });
+                if (!res.ok) return;
+                const arr = await res.json();
+                arr.reverse().forEach(renderOther);
+                if (arr.length) lastT = Math.max(lastT, arr[arr.length - 1].t);
+            } catch (e) { }
+        }, 2000);
+
+        return { publish, ready: true };
+    })();
+
+    // Expunere pt. debug
+    window.__macarena = Object.assign(window.__macarena || {}, {
+        centerMe, toggleShare,
+        publicRoom: joinedRoom, transportReady: !!supa.ready
+    });
+})();
+
+
+
+/* ===== MACARENA: GEO V3 – fix robust la primul fix + center ===== */
+(() => {
+    if (window.__MACARENA_GEO_V3__) return; window.__MACARENA_GEO_V3__ = true;
+
+    const $ = s => document.querySelector(s);
+    const btnShare = $('#share');
+    const btnCenter = $('#centerMe');
+    const statusOut = $('#shareStatus') || { textContent: '' };
+    const map = window.__MACARENA_MAP__;
+    const youLayer = window.__YOU_LAYER__ || L.layerGroup().addTo(map); window.__YOU_LAYER__ = youLayer;
+
+    // icon tu (dacă n-a fost definit deja)
+    const youIcon = L.divIcon({ className: 'macarena-you', html: '', iconSize: [14, 14], iconAnchor: [7, 7], tooltipAnchor: [0, -10] });
+
+    let youMarker = null, youAcc = null, lastPos = null, watchId = null, awaitingFirstFix = false;
+
+    function upsertYou(lat, lng, acc) {
+        lastPos = { lat, lng, acc };
+        if (!youMarker) {
+            youMarker = L.marker([lat, lng], { icon: youIcon, zIndexOffset: 1000 }).addTo(youLayer);
+            youMarker.bindTooltip('Tu', { permanent: true, direction: 'top', offset: [0, -10] });
+        } else youMarker.setLatLng([lat, lng]);
+
+        if (!youAcc) {
+            youAcc = L.circle([lat, lng], { radius: acc || 25, weight: 1, fillOpacity: .08 }).addTo(youLayer);
+        } else { youAcc.setLatLng([lat, lng]); if (acc) youAcc.setRadius(acc); }
+    }
+
+    function centerMe() {
+        // centrează imediat dacă avem poziție
+        if (lastPos) { map.setView([lastPos.lat, lastPos.lng], Math.max(map.getZoom(), 16), { animate: true }); return; }
+
+        // dacă încă așteptăm primul fix… cere un fix unic
+        if ('geolocation' in navigator) {
+            statusOut.textContent = 'Caut poziția pentru centrare…';
+            navigator.geolocation.getCurrentPosition(
+                p => {
+                    const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
+                    map.setView([c.latitude, c.longitude], 16, { animate: true });
+                    statusOut.textContent = `Centrat (~${Math.round(c.accuracy)} m)`;
+                },
+                () => { statusOut.textContent = 'Nu am putut centra (permisiune?).'; },
+                { enableHighAccuracy: true, maximumAge: 10000, timeout: 8000 }
+            );
+        }
+    }
+
+    function toggleShare() {
+        if (!('geolocation' in navigator)) { statusOut.textContent = 'Geolocație indisponibilă.'; return; }
+
+        // STOP
+        if (watchId !== null) {
+            navigator.geolocation.clearWatch(watchId); watchId = null; awaitingFirstFix = false;
+            btnShare && (btnShare.textContent = 'Start sharing', btnShare.setAttribute('aria-pressed', 'false'));
+            statusOut.textContent = 'Sharing oprit.'; return;
+        }
+
+        // START (debounce ca să nu spamăm cereri)
+        if (awaitingFirstFix) return;
+        awaitingFirstFix = true;
+        btnShare && (btnShare.textContent = 'Stop sharing', btnShare.setAttribute('aria-pressed', 'true'));
+        statusOut.textContent = 'Pornește share… acordă permisiunea.';
+
+        // 1) fix unic imediat
+        navigator.geolocation.getCurrentPosition(
+            p => {
+                const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
+                map.__centeredOnce || (map.__centeredOnce = true, map.setView([c.latitude, c.longitude], 16));
+                statusOut.textContent = `Fix inițial (~${Math.round(c.accuracy)} m)`;
+                awaitingFirstFix = false;
+            },
+            e => { console.warn('getCurrentPosition', e); statusOut.textContent = 'Nu am putut lua fix-ul inițial.'; awaitingFirstFix = false; },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+        );
+
+        // 2) watch continuu
+        watchId = navigator.geolocation.watchPosition(
+            p => {
+                const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
+                statusOut.textContent = `Sharing activ • ~${Math.round(c.accuracy)} m`;
+            },
+            e => {
+                const txt = ({ 1: 'Acces refuzat', 2: 'Indisponibil', 3: 'Timeout' })[e.code] || 'Eroare geo';
+                statusOut.textContent = txt; btnShare && (btnShare.textContent = 'Start sharing', btnShare.setAttribute('aria-pressed', 'false'));
+                watchId = null; awaitingFirstFix = false;
+            },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+        );
+    }
+
+    btnCenter && btnCenter.addEventListener('click', centerMe, { passive: true });
+    btnShare && btnShare.addEventListener('click', toggleShare, { passive: true });
+
+    // expunere debug
+    (window.__macarena = window.__macarena || {}).baseState = () => ({ watchId, awaitingFirstFix, hasMarker: !!youMarker, lastPos });
+})();
