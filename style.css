@@ -5,7 +5,7 @@
     --accent: #60a5fa;
     --danger: #ef4444;
     --panel: #12161b;
-    --border: #1f2933;
+    --border: #1f2933
 }
 
 * {
@@ -20,188 +20,160 @@ body {
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font: 500 15px/1.35 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-}
-
-button, input {
-    font: inherit
+    font: 500 15px/1.35 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif
 }
 
 .topbar {
     position: fixed;
-    left: 0;
-    top: 0;
-    right: 360px;
-    height: 44px;
+    inset: 0 0 auto 0;
+    height: 56px;
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 0 12px;
-    background: #11161c;
-    border-bottom: 1px solid var(--border);
-    z-index: 5;
-}
-
-    .topbar .brand {
-        font-weight: 700;
-        color: var(--muted)
-    }
-
-    .topbar .room-inline {
-        display: flex;
-        gap: 8px;
-        align-items: center
-    }
-
-    .topbar input {
-        height: 28px;
-        padding: 0 8px;
-        border: 1px solid var(--border);
-        background: #0f141a;
-        color: var(--fg);
-        border-radius: 6px
-    }
-
-    .topbar button {
-        height: 28px;
-        padding: 0 10px;
-        border: 1px solid var(--border);
-        background: #151b22;
-        color: var(--fg);
-        border-radius: 6px;
-        cursor: pointer
-    }
-
-#map {
-    position: absolute;
-    top: 44px;
-    left: 0;
-    bottom: 0;
-    right: 360px;
-}
-
-#panel {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 360px;
-    overflow: auto;
-    padding: 8px;
     background: var(--panel);
-    border-left: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    z-index: 1000
 }
 
-.card {
-    background: #0f141a;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 12px;
-    margin: 8px 0;
-    box-shadow: 0 0 0 1px rgba(255,255,255,0.02) inset;
+.brand {
+    font-weight: 700
 }
 
-    .card h3 {
-        margin: 0 0 10px 0;
-        font-size: 15px;
-        color: var(--muted)
-    }
-
-.row {
+.controls {
     display: flex;
     gap: 8px;
     align-items: center;
-    flex-wrap: wrap
+    flex: 1
 }
 
-.stack {
-    display: flex;
-    flex-direction: column;
-    gap: 8px
-}
-
-input[type="text"], input[type="email"], input[type="tel"] {
-    flex: 1;
-    min-width: 140px;
-    height: 32px;
-    padding: 0 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: #0b1117;
-    color: var(--fg);
-}
+    .controls input {
+        background: #0f1318;
+        border: 1px solid var(--border);
+        color: var(--fg);
+        padding: 8px 10px;
+        border-radius: 8px;
+        min-width: 180px
+    }
 
 button {
-    height: 32px;
-    padding: 0 12px;
-    border-radius: 8px;
     border: 1px solid var(--border);
-    background: #151b22;
-    color: var(--fg);
-    cursor: pointer;
+    background: var(--accent);
+    color: #04121f;
+    font-weight: 700;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer
 }
 
-    button:hover {
-        filter: brightness(1.07)
+    button.secondary {
+        background: #19212b;
+        color: var(--fg)
     }
 
     button.danger {
-        background: #1a0f10;
-        border-color: #3b1010;
-        color: #ffb3b3
-    }
-
-    button.ghost {
-        background: transparent
-    }
-
-    button.sos {
         background: var(--danger);
-        border-color: #7f1d1d;
-        color: white;
-        font-weight: 700;
-        letter-spacing: .5px;
+        color: #fff
     }
 
-.avatar {
-    width: 36px;
-    height: 36px;
-    border-radius: 50%;
-    background: #1b2530;
-    border: 1px solid var(--border);
+#map {
+    position: fixed;
+    top: 56px;
+    bottom: 0;
+    left: 0;
+    right: 340px
+}
+
+.leaflet-container {
+    background: #0d1117
+}
+
+.leaflet-control-zoom a {
+    color: #0d1117
+}
+
+.panel {
+    position: fixed;
+    top: 56px;
+    right: 0;
+    bottom: 28px;
+    width: 340px;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    padding: 12px;
+    overflow: auto
+}
+
+.auth {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #627387
+    gap: 8px;
+    flex-wrap: wrap
 }
 
-.list {
-    margin: 0;
-    padding-left: 18px
-}
-
-.mini {
-    margin: 8px 2px 12px;
-    color: var(--muted);
-    text-align: center
-}
-
-@media (max-width: 900px) {
-    #panel {
-        width: 100%;
-        left: 0;
-        top: auto;
-        height: 46%;
-        bottom: 0
+    .auth input {
+        flex: 1;
+        min-width: 180px;
+        background: #0f1318;
+        border: 1px solid var(--border);
+        color: var(--fg);
+        padding: 8px 10px;
+        border-radius: 8px
     }
 
+.linkbox {
+    margin-top: 6px;
+    padding: 8px;
+    background: #0f1318;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    overflow: auto
+}
+
+.statusbar {
+    position: fixed;
+    inset: auto 0 0 0;
+    height: 28px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    padding: 0 12px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    overflow-x: auto;
+    white-space: nowrap
+}
+
+/* OAuth button */
+button.oauth {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px
+}
+
+    button.oauth.google {
+        background: #fff;
+        color: #1f2937;
+        border-color: #374151
+    }
+
+        button.oauth.google svg {
+            display: block
+        }
+
+@media (max-width:900px) {
     #map {
         right: 0;
-        top: 44px;
-        height: 54%
+        bottom: 28px
     }
 
-    .topbar {
-        right: 0
+    .panel {
+        position: fixed;
+        inset: auto 0 28px 0;
+        height: 220px;
+        width: auto;
+        border-left: none;
+        border-top: 1px solid var(--border)
     }
 }

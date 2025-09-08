@@ -1,481 +1,242 @@
-﻿// ==============================
-// Macarena • app.js (integral)
-// ==============================
+﻿// ====== Supabase client (browser-only, ESM) ======
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
-// ---------- Helpers DOM ----------
-const $ = (id) => document.getElementById(id);
-const on = (el, ev, fn) => el && el.addEventListener(ev, fn, { passive: true });
+// >>> completează cu datele tale (le-am pus deja din ce mi-ai dat)
+const SUPABASE_URL = "https://ndxjdmkeounxliifpbyw.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5keGpkbWtlb3VueGxpaWZwYnl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTcyNTAxMjcsImV4cCI6MjA3MjgyNjEyN30.tzBnFZiFdPzqlSKiqx6uPMpZvHdSF1D8m7DXQx5E0I4";
 
-function byText(selector, text) {
-    const nodes = document.querySelectorAll(selector);
-    text = (text || '').toLowerCase();
-    for (const n of nodes) {
-        if (n.textContent.trim().toLowerCase() === text) return n;
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON, {
+    auth: {
+        persistSession: true,
+        detectSessionInUrl: true, // important pentru callback-ul OAuth/magic link
+        flowType: "pkce"
     }
-    return null;
-}
+});
 
-function idOrText(id, selector, text) {
-    return $(id) || byText(selector, text);
-}
-
-// injectăm puțin CSS (blink SOS, panel etc) fără să-ți atingi style.css
-(function injectCss() {
-    const css = `
-  .blink{ animation: blink 0.6s ease-in-out infinite; }
-  @keyframes blink{ 0%,100%{filter:drop-shadow(0 0 0 red)} 50%{filter:drop-shadow(0 0 8px red)} }
-  .panel{ position:absolute; top:0; right:0; width:360px; height:100%; overflow:auto; background:#0e0f11; color:#cfd7df; padding:10px 12px; border-left:1px solid #222; }
-  .panel .sec{ margin:10px 0 14px; padding:10px; background:#13151a; border:1px solid #1f2430; border-radius:8px; }
-  .panel .sec h4{ margin:0 0 10px; font-weight:600; }
-  .soft{ opacity:.85 }
-  .badge{ display:inline-block; padding:.25rem .5rem; border-radius:999px; background:#243; color:#aef; font-size:.8rem; }
-  `;
-    const s = document.createElement('style');
-    s.textContent = css;
-    document.head.appendChild(s);
-})();
-
-// ---------- Supabase init ----------
-const SUPABASE_URL = 'https://ndxjdmkeounxliifpbyw.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_7k4luMzyb2t3LNeHSF8WBQ_bLZB4KNc'; // public
-
-// supabase-js v2 (global import din <script type="module" ...> în index.html)
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// ---------- Leaflet map ----------
-let Lmap, meMarker, mePath, meHistory;
-const others = new Map(); // user_id -> { marker, path }
-let watchId = null;
-let saveTimer = null;
-
-// ---------- App State ----------
-const S = {
-    user: null,
-    room: '',
-    visibility: 'global',  // 'global' | 'private'
-    lastPos: null,
-    sosTimer: null,
-    sosDownAt: 0,
-    sosThresholdMs: 3000,
-    alertsRt: null,
-    locRt: null
+// ====== UI refs ======
+const el = {
+    room: document.getElementById('room'),
+    join: document.getElementById('join'),
+    share: document.getElementById('share'),
+    centerMe: document.getElementById('centerMe'),
+    authStatus: document.getElementById('authStatus'),
+    email: document.getElementById('email'),
+    sendLink: document.getElementById('sendLink'),
+    signOut: document.getElementById('signOut'),
+    googleBtn: document.getElementById('googleBtn'),
+    roomStatus: document.getElementById('roomStatus'),
+    shareStatus: document.getElementById('shareStatus'),
+    roomLink: document.getElementById('roomLink'),
 };
 
-// ---------- Tabele ----------
-const TB = {
-    locations: 'locations',
-    alerts: 'alerts',
-    history: 'locations_history'
-};
+// ====== Map (Leaflet) ======
+const map = L.map('map', { zoomControl: true }).setView([45.9432, 24.9668], 6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+}).addTo(map);
 
-// ---------- Beep (audio SOS) ----------
-function makeBeep() {
-    try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        return () => {
-            const o = ctx.createOscillator();
-            const g = ctx.createGain();
-            o.type = 'sine'; o.frequency.value = 880;
-            g.gain.value = .15;
-            o.connect(g); g.connect(ctx.destination);
-            o.start();
-            setTimeout(() => { o.stop(); }, 300);
-        };
-    } catch { return () => { }; }
-}
-const beep = makeBeep();
-
-// ---------- UI refs (cu fallback pe text) ----------
-const ui = {
-    // top bar
-    joinInput: idOrText('room', 'input', ''),
-    joinBtn: idOrText('btnJoin', 'button', 'join'),
-    centerBtn: idOrText('centerMeBtn', 'button', 'center me'),
-    startTop: idOrText('startShareTop', 'button', 'start sharing'),
-    stopTop: idOrText('stopShareTop', 'button', 'stop'),
-
-    // panel right (dacă există; nu oblig)
-    panel: document.querySelector('.panel') || null,
-
-    // auth
-    signGoogle: byText('button', 'sign in with google'),
-    signOut: byText('button', 'sign out'),
-    magicEmail: document.querySelector('input[type="email"]'),
-    magicSend: byText('button', 'trimite magic link'),
-
-    // phone
-    phoneInput: document.querySelector('input[placeholder^="+40"], input[placeholder*="xxx"]'),
-    otpInput: byText('input', 'cod sms') || null,
-    otpSend: byText('button', 'sms otp') || null,
-    otpConfirm: byText('button', 'confirmă') || null,
-
-    // mode visibility
-    radioGlobal: byText('label,div span', 'global (toți utilizatorii)')?.closest('label,div')?.querySelector('input[type="radio"]'),
-    radioPrivate: byText('label,div span', 'cameră privată')?.closest('label,div')?.querySelector('input[type="radio"]'),
-
-    // share location din panel
-    startShare: byText('button', 'start sharing'),
-    stopShare: byText('button', 'stop'),
-
-    // alerts
-    sosBtn: byText('button', 'sos'),
-    checkInBtn: byText('button', 'check-in'),
-
-    // history
-    histLoad: byText('button', 'încarcă'),
-    histClear: byText('button', 'curăță'),
-
-    // display link camera
-    roomLinkOut: document.querySelector('input[readonly]') || null
-};
-
-// ---------- Map init ----------
-function initMap() {
-    const mapDiv = $('map') || (() => { // fallback dacă nu ai id=map
-        const d = document.createElement('div');
-        d.id = 'map';
-        d.style.position = 'absolute';
-        d.style.left = '0'; d.style.top = '0'; d.style.bottom = '0'; d.style.right = (ui.panel ? '360px' : '0');
-        document.body.appendChild(d);
-        return d;
-    })();
-
-    if (ui.panel) {
-        // dacă panelul nu există în HTML, îl construim minimalist (opțional)
-    }
-
-    Lmap = L.map(mapDiv).setView([45.75, 21.23], 6);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(Lmap);
-}
-
-function centerOnMe() {
-    if (meMarker) {
-        Lmap.setView(meMarker.getLatLng(), 15);
+const markers = new Map();
+function upsertMarker(uid, { lat, lng, name, ts, isSelf }) {
+    const label = name || uid?.slice?.(0, 6) || 'user';
+    const text = `${label}${isSelf ? ' (eu)' : ''}<br>${new Date(ts).toLocaleTimeString()}`;
+    if (markers.has(uid)) {
+        const m = markers.get(uid);
+        m.setLatLng([lat, lng]).bindPopup(text);
     } else {
-        navigator.geolocation.getCurrentPosition(p => {
-            const { latitude: lat, longitude: lng } = p.coords;
-            Lmap.setView([lat, lng], 15);
-        });
+        const m = L.marker([lat, lng]).addTo(map).bindPopup(text);
+        markers.set(uid, m);
     }
 }
-
-// ---------- Auth ----------
-async function restoreSession() {
-    const { data: { user } } = await sb.auth.getUser();
-    S.user = user || null;
-    reflectAuth();
-    setRealtime(); // după auth setăm canalele
-}
-
-async function signInGoogle() {
-    await sb.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-            redirectTo: location.href.split('#')[0]
+function removeMissing(keepSet) {
+    for (const uid of Array.from(markers.keys())) {
+        if (!keepSet.has(uid)) {
+            const m = markers.get(uid); map.removeLayer(m); markers.delete(uid);
         }
-    });
-}
-
-async function signOut() {
-    await sb.auth.signOut();
-    S.user = null;
-    reflectAuth();
-    setRealtime();
-}
-
-async function signInMagic(email) {
-    if (!email) return alert('Introdu email');
-    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.href.split('#')[0] } });
-    if (error) alert(error.message); else alert('Ți-am trimis link pe email.');
-}
-
-function reflectAuth() {
-    // Panel mic: afișez status
-    const el = byText('.panel .sec h4', 'Autentificare')?.closest('.sec') || null;
-    if (el) {
-        const status = S.user ? `Autentificat ca: <span class="badge">${S.user.email || S.user.phone || S.user.id}</span>` : 'Neautentificat';
-        const span = el.querySelector('.soft') || document.createElement('div');
-        span.className = 'soft'; span.style.marginTop = '6px';
-        span.innerHTML = status;
-        el.appendChild(span);
-    }
-
-    // link cameră
-    if (ui.roomLinkOut) {
-        const url = new URL(location.href);
-        if (S.room) url.searchParams.set('room', S.room); else url.searchParams.delete('room');
-        ui.roomLinkOut.value = S.room ? url.toString() : '';
     }
 }
 
-// ---------- Rooms & Visibility ----------
-function setVisibility(mode) {
-    S.visibility = mode; // 'global' | 'private'
-    setRealtime();
-}
+// ====== State ======
+let session = null;
+let currentUser = null;
+let roomId = null;
+let watchId = null;
+let realtimeChannel = null;
+let lastSent = 0;
 
-function joinRoom() {
-    const val = (ui.joinInput?.value || '').trim();
-    if (!val) return alert('Introdu numele camerei (ex: familia, echipa-42)');
-    S.room = val;
-    reflectAuth();
-    setRealtime();
+// ====== Helpers ======
+function setStatus(where, msg) {
+    if (where === 'share') el.shareStatus.textContent = msg;
+    else if (where === 'room') el.roomStatus.textContent = msg;
+    else el.authStatus.textContent = msg;
 }
-
-function leaveRoom() {
-    S.room = '';
-    reflectAuth();
-    setRealtime();
+function getRoomFromURL() {
+    const u = new URL(location.href);
+    return u.searchParams.get('room');
 }
+function setRoomToURL(id) {
+    const u = new URL(location.href);
+    u.searchParams.set('room', id);
+    history.replaceState(null, '', u.toString());
+    const link = `${u.origin}${u.pathname}?room=${encodeURIComponent(id)}`;
+    el.roomLink.textContent = link;
+}
+const round = (n, p = 5) => Number(n.toFixed(p));
 
-// ---------- Geolocation & persist ----------
-function onPos(p) {
-    const { latitude: lat, longitude: lng, accuracy } = p.coords;
-    if (!meMarker) {
-        meMarker = L.marker([lat, lng], { title: 'Eu' }).addTo(Lmap);
-        mePath = L.polyline([], { color: '#4dc4ff', weight: 4 }).addTo(Lmap);
-        Lmap.setView([lat, lng], 15);
+// ====== Auth (UI + fluxuri) ======
+async function refreshAuthUI() {
+    const { data: { session: s } } = await supabase.auth.getSession();
+    session = s;
+    currentUser = s?.user || null;
+    if (currentUser) {
+        setStatus('auth', `Autentificat ca: ${currentUser.email}`);
     } else {
-        meMarker.setLatLng([lat, lng]);
+        setStatus('auth', 'Neautentificat. Poți folosi Google sau magic link (email).');
     }
-    mePath.addLatLng([lat, lng]);
-    S.lastPos = { lat, lng, accuracy, at: new Date().toISOString() };
 }
+await refreshAuthUI();
+supabase.auth.onAuthStateChange((_evt, _ses) => refreshAuthUI());
 
-function onPosErr(e) { console.warn('geo', e); }
-
-async function persistCurrentLocation() {
-    if (!S.user || !S.lastPos) return;
-    try {
-        const payload = {
-            user_id: S.user.id,
-            lat: S.lastPos.lat, lng: S.lastPos.lng,
-            accuracy: S.lastPos.accuracy ?? null,
-            visibility: S.visibility,
-            room: S.visibility === 'private' ? (S.room || null) : null,
-            created_at: new Date().toISOString()
-        };
-        const { error } = await sb.from(TB.locations).insert(payload);
-        if (error) console.warn('insert locations', error.message);
-    } catch (e) { console.warn(e); }
-}
-
-function startSharing() {
-    if (!navigator.geolocation) return alert('Browserul nu suportă Geolocation.');
-    if (watchId) return;
-    watchId = navigator.geolocation.watchPosition(onPos, onPosErr, {
-        enableHighAccuracy: true, maximumAge: 0, timeout: 15000
+// Google OAuth
+el.googleBtn.addEventListener('click', async () => {
+    // IMPORTANT: redirectTo = URL-ul public al site-ului tău pe GitHub Pages
+    const redirectTo = "https://razvancodreanu.github.io/Macarena/";
+    const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo } // Supabase va face hop prin /auth/v1/callback și revine aici
     });
-    saveTimer = setInterval(persistCurrentLocation, 5000);
-    console.log('Sharing started');
+    if (error) alert(error.message);
+});
+
+// Magic link
+el.sendLink.addEventListener('click', async () => {
+    const email = (el.email.value || '').trim();
+    if (!email) { alert('Introdu o adresă de email.'); return; }
+    const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: "https://razvancodreanu.github.io/Macarena/" }
+    });
+    if (error) alert(error.message);
+    else alert('Ți-am trimis un magic link. Verifică emailul și revino la pagină.');
+});
+
+// Sign out
+el.signOut.addEventListener('click', async () => {
+    await supabase.auth.signOut();
+    currentUser = null;
+    await refreshAuthUI();
+});
+
+// ====== Rooms / Realtime ======
+async function loadInitial(room) {
+    const { data, error } = await supabase
+        .from('locations')
+        .select('*')
+        .eq('room_id', room);
+
+    if (error) { setStatus('room', `Eroare load: ${error.message}`); return; }
+
+    const keep = new Set();
+    for (const row of data || []) {
+        keep.add(row.user_id);
+        if (row.lat && row.lng) {
+            upsertMarker(row.user_id, {
+                lat: row.lat, lng: row.lng, name: row.name,
+                ts: row.ts || new Date().toISOString(),
+                isSelf: currentUser && row.user_id === currentUser.id
+            });
+        }
+    }
+    removeMissing(keep);
+}
+
+async function subscribeRoom(room) {
+    if (realtimeChannel) {
+        await supabase.removeChannel(realtimeChannel);
+        realtimeChannel = null;
+    }
+
+    realtimeChannel = supabase
+        .channel(`room:${room}`)
+        .on('postgres_changes',
+            { event: '*', schema: 'public', table: 'locations', filter: `room_id=eq.${room}` },
+            (payload) => {
+                const row = payload.new || payload.old;
+                if (!row) return;
+                if (payload.eventType === 'DELETE') return;
+                if (row.lat && row.lng) {
+                    upsertMarker(row.user_id, {
+                        lat: row.lat, lng: row.lng, name: row.name,
+                        ts: row.ts, isSelf: currentUser && row.user_id === currentUser.id
+                    });
+                }
+            })
+        .subscribe((status) => {
+            setStatus('room', `Room "${room}" realtime: ${status}`);
+        });
+}
+
+async function joinRoom(id) {
+    roomId = (id || '').trim();
+    if (!roomId) { setStatus('room', 'Alege un room id (ex: friends)'); return; }
+    setRoomToURL(roomId);
+    await loadInitial(roomId);
+    await subscribeRoom(roomId);
+}
+el.join.addEventListener('click', () => joinRoom(el.room.value));
+
+// Deep-link room din URL, dacă există
+const urlRoom = getRoomFromURL();
+if (urlRoom) { el.room.value = urlRoom; joinRoom(urlRoom); }
+
+// ====== Share on/off ======
+function startSharing() {
+    if (!currentUser) { alert('Te rog loghează-te înainte de sharing.'); return; }
+    if (!roomId) { alert('Mai întâi intră într-o cameră (Join).'); return; }
+    if (!('geolocation' in navigator)) { alert('Browserul nu are Geolocation.'); return; }
+    if (watchId) return;
+
+    watchId = navigator.geolocation.watchPosition(async pos => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        const now = new Date().toISOString();
+        const nowMs = Date.now();
+        if (nowMs - lastSent < 5000) return; // ~o dată la 5s
+        lastSent = nowMs;
+
+        const lat = round(latitude, 5);
+        const lng = round(longitude, 5);
+
+        const { error } = await supabase
+            .from('locations')
+            .upsert({
+                room_id: roomId,
+                user_id: currentUser.id,
+                name: currentUser.email,
+                lat, lng, acc: Math.round(accuracy),
+                ts: now
+            }, { onConflict: 'room_id,user_id' });
+
+        if (error) { setStatus('share', `Eroare: ${error.message}`); return; }
+
+        upsertMarker(currentUser.id, { lat, lng, name: currentUser.email, ts: now, isSelf: true });
+        if (!map._centeredOnce) { map.setView([lat, lng], 15); map._centeredOnce = true; }
+        setStatus('share', `Sharing ON (±${Math.round(accuracy)} m)`);
+    }, err => {
+        setStatus('share', `Eroare geolocație: ${err.message}`);
+    }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 });
+
+    el.share.textContent = 'Stop sharing';
+    el.share.classList.add('danger');
 }
 
 function stopSharing() {
     if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
-    if (saveTimer) { clearInterval(saveTimer); saveTimer = null; }
-    console.log('Sharing stopped');
+    el.share.textContent = 'Start sharing';
+    el.share.classList.remove('danger');
+    setStatus('share', 'Sharing OFF');
 }
 
-// ---------- Realtime ----------
-function clearOthers() {
-    for (const [id, o] of others) {
-        if (o.marker) Lmap.removeLayer(o.marker);
-        if (o.path) Lmap.removeLayer(o.path);
-    }
-    others.clear();
-}
-
-function upsertOther(userId, lat, lng) {
-    let o = others.get(userId);
-    if (!o) {
-        o = {
-            marker: L.marker([lat, lng], { title: userId, opacity: 0.95 }).addTo(Lmap),
-            path: L.polyline([], { color: '#ffaa00', weight: 3, opacity: 0.85 }).addTo(Lmap)
-        };
-        others.set(userId, o);
-    }
-    o.marker.setLatLng([lat, lng]);
-    o.path.addLatLng([lat, lng]);
-}
-
-function setRealtime() {
-    // curăț abonamente vechi
-    if (S.locRt) { sb.removeChannel(S.locRt); S.locRt = null; }
-    if (S.alertsRt) { sb.removeChannel(S.alertsRt); S.alertsRt = null; }
-    clearOthers();
-
-    // locații (INSERT)
-    S.locRt = sb.channel('rt_locations')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: TB.locations }, payload => {
-            const r = payload.new;
-            // filtre: global sau aceeași cameră
-            const show =
-                r.visibility === 'global' ||
-                (r.visibility === 'private' && S.room && r.room === S.room);
-            if (!show) return;
-            if (r.user_id === S.user?.id) return;
-            upsertOther(r.user_id, r.lat, r.lng);
-        })
-        .subscribe((status) => { if (status === 'SUBSCRIBED') console.log('RT locations ready'); });
-
-    // alerte — doar pentru popup sonor/efect
-    S.alertsRt = sb.channel('rt_alerts')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: TB.alerts }, payload => {
-            const r = payload.new;
-            const show =
-                r.visibility === 'global' ||
-                (r.visibility === 'private' && S.room && r.room === S.room);
-            if (!show) return;
-
-            // Beep + pin roșu temporar
-            try { beep(); } catch { }
-            const m = L.marker([r.lat, r.lng], { title: `ALERTĂ ${r.type.toUpperCase()}` }).addTo(Lmap);
-            const el = m.getElement(); if (el) el.classList.add('blink');
-            setTimeout(() => { Lmap.removeLayer(m); }, 10 * 1000);
-
-            // mic toast
-            const msg = `ALERTĂ: ${r.type} • ${new Date(r.created_at).toLocaleTimeString()}`;
-            console.log(msg);
-        })
-        .subscribe(() => { });
-}
-
-// ---------- History ----------
-async function loadMyHistory(hours = 24) {
-    if (!S.user) return alert('Autentifică-te');
-    const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
-
-    const { data, error } = await sb
-        .from(TB.locations)
-        .select('lat,lng,created_at')
-        .eq('user_id', S.user.id)
-        .gte('created_at', since)
-        .order('created_at', { ascending: true });
-
-    if (error) { console.warn(error.message); return; }
-
-    if (meHistory) { Lmap.removeLayer(meHistory); }
-    meHistory = L.polyline(data.map(d => [d.lat, d.lng]), { color: '#00d4aa', weight: 3 }).addTo(Lmap);
-    if (data.length) Lmap.fitBounds(meHistory.getBounds(), { padding: [20, 20] });
-}
-
-function clearHistoryLayer() {
-    if (meHistory) { Lmap.removeLayer(meHistory); meHistory = null; }
-}
-
-// ---------- Alerts ----------
-function sosDown() {
-    S.sosDownAt = performance.now();
-    // mic countdown vizual în titlu (opțional)
-    S.sosTimer = requestAnimationFrame(tickCountdown);
-}
-function sosUp() {
-    if (S.sosTimer) { cancelAnimationFrame(S.sosTimer); S.sosTimer = null; document.title = document.title.replace(/^\[\d\]\s*/, ''); }
-    const dur = performance.now() - S.sosDownAt;
-    if (dur >= S.sosThresholdMs) {
-        triggerSOS(true); // instant
-    } else {
-        // scurt → selector tip (minimal pentru demo)
-        triggerSOS(false);
-    }
-}
-
-function tickCountdown() {
-    const remain = Math.max(0, S.sosThresholdMs - (performance.now() - S.sosDownAt));
-    const sec = Math.ceil(remain / 1000);
-    const base = document.title.replace(/^\[\d\]\s*/, '');
-    document.title = `[${sec}] ${base}`;
-    S.sosTimer = requestAnimationFrame(tickCountdown);
-}
-
-async function triggerSOS(instant = false) {
-    try { beep(); } catch { }
-    // blink pe markerul meu
-    if (meMarker) {
-        const el = meMarker.getElement();
-        if (el) { el.classList.add('blink'); setTimeout(() => el.classList.remove('blink'), 10 * 1000); }
-    }
-    // inserăm în DB dacă știm poziția & userul
-    if (!S.user || !meMarker) return;
-    const { lat, lng } = meMarker.getLatLng();
-    const payload = {
-        user_id: S.user.id,
-        type: instant ? 'sos_instant' : 'sos_select',
-        lat, lng,
-        visibility: S.visibility,
-        room: S.visibility === 'private' ? (S.room || null) : null,
-        created_at: new Date().toISOString()
-    };
-    const { error } = await sb.from(TB.alerts).insert(payload);
-    if (error) console.warn('insert alerts', error.message);
-}
-
-async function checkIn() {
-    if (!S.user || !meMarker) return;
-    const { lat, lng } = meMarker.getLatLng();
-    const { error } = await sb.from(TB.alerts).insert({
-        user_id: S.user.id, type: 'checkin', lat, lng,
-        visibility: S.visibility, room: S.visibility === 'private' ? (S.room || null) : null,
-        created_at: new Date().toISOString()
-    });
-    if (error) console.warn('checkin', error.message);
-}
-
-// ---------- Wire UI ----------
-function wireUi() {
-    // top bar
-    on(ui.centerBtn, 'click', centerOnMe);
-    on(ui.joinBtn, 'click', () => S.room ? leaveRoom() : joinRoom());
-    on(ui.startTop, 'click', startSharing);
-    on(ui.stopTop, 'click', stopSharing);
-
-    // auth
-    on(ui.signGoogle, 'click', signInGoogle);
-    on(ui.signOut, 'click', signOut);
-    on(ui.magicSend, 'click', () => signInMagic(ui.magicEmail?.value || ''));
-
-    // visibility
-    on(ui.radioGlobal, 'change', () => setVisibility('global'));
-    on(ui.radioPrivate, 'change', () => setVisibility('private'));
-
-    // panel share
-    on(ui.startShare, 'click', startSharing);
-    on(ui.stopShare, 'click', stopSharing);
-
-    // alerts
-    if (ui.sosBtn) {
-        ui.sosBtn.addEventListener('pointerdown', sosDown);
-        ui.sosBtn.addEventListener('pointerup', sosUp);
-        ui.sosBtn.addEventListener('pointerleave', sosUp);
-        ui.sosBtn.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { sosDown(); setTimeout(sosUp, 100); } });
-    }
-    on(ui.checkInBtn, 'click', checkIn);
-
-    // history
-    on(ui.histLoad, 'click', () => loadMyHistory(24));
-    on(ui.histClear, 'click', clearHistoryLayer);
-}
-
-// ---------- Init ----------
-async function init() {
-    initMap();
-    wireUi();
-
-    // preia ?room= din url
-    const roomQ = new URLSearchParams(location.search).get('room');
-    if (roomQ) { S.room = roomQ; if (ui.joinInput) ui.joinInput.value = roomQ; }
-
-    await restoreSession();
-
-    // centrează la început (fără a porni share)
-    try {
-        navigator.geolocation.getCurrentPosition(p => {
-            const { latitude: lat, longitude: lng } = p.coords;
-            Lmap.setView([lat, lng], 13);
-        });
-    } catch { }
-}
-
-document.addEventListener('DOMContentLoaded', init);
+el.share.addEventListener('click', () => watchId ? stopSharing() : startSharing());
+el.centerMe.addEventListener('click', () => {
+    if (!('geolocation' in navigator)) return;
+    navigator.geolocation.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 15));
+});
