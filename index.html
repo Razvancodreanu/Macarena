@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ro">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Macarena · Live Location</title>
+    <link rel="stylesheet" href="style.css" />
+    <!-- supabase-js v2 (ESM via Skypack) -->
+    <script type="module" src="https://cdn.skypack.dev/@supabase/supabase-js@2"></script>
+</head>
+<body>
+    <header>
+        <h1>Macarena · Live Location</h1>
+        <p class="muted">Share / Track poziții în timp real + alerte</p>
+    </header>
+
+    <main>
+        <section class="card">
+            <h2>1) Intră într-o cameră</h2>
+            <div class="row">
+                <input id="room" class="input" placeholder="ex: familia, echipa-42" />
+                <button id="join" class="btn">Join</button>
+                <button id="leave" class="btn btn-ghost">Leave</button>
+            </div>
+            <p id="status" class="status"></p>
+            <div class="row tiny">
+                <label><input id="remember" type="checkbox" /> Ține minte camera</label>
+                <button id="copyLink" class="btn btn-ghost tiny">Copy magic link</button>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>2) Share location</h2>
+            <div class="row">
+                <button id="start" class="btn success">Start sharing</button>
+                <button id="stop" class="btn danger btn-ghost">Stop</button>
+            </div>
+            <p class="muted tiny">Telefonul/Browserul cere permisiunea de locație. Trimitere ~ la 5s dacă se schimbă.</p>
+        </section>
+
+        <section class="card">
+            <h2>3) Alerte</h2>
+            <div class="row">
+                <button id="sos" class="btn danger">SOS</button>
+                <button id="checkin" class="btn">Check-in</button>
+            </div>
+            <ul id="alerts" class="list"></ul>
+        </section>
+
+        <section class="card">
+            <h2>Live · Membri în cameră</h2>
+            <ul id="live" class="list"></ul>
+        </section>
+
+        <section class="card">
+            <h2>Traseul tău în ultimele 24h</h2>
+            <div class="row">
+                <button id="loadTrack" class="btn">Încarcă</button>
+            </div>
+            <ul id="track" class="list small"></ul>
+        </section>
+    </main>
+
+    <footer>
+        <span class="muted tiny">Schema: <code>macarena</code> · tables: <code>locations</code>, <code>locations_history</code>, <code>alerts</code></span>
+    </footer>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
