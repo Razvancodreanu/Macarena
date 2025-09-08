@@ -177,3 +177,16 @@ button.oauth {
         border-top: 1px solid var(--border)
     }
 }
+/* Asigură înălțime pentru hartă pe orice layout */
+html, body {
+    height: 100%;
+}
+
+#map {
+    min-height: 320px;
+}
+
+/* Dacă ai elemente decorative peste hartă, să nu blocheze clickurile */
+.overlay-decor {
+    pointer-events: none;
+}

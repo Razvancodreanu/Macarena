@@ -240,3 +240,162 @@ el.centerMe.addEventListener('click', () => {
     if (!('geolocation' in navigator)) return;
     navigator.geolocation.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 15));
 });
+/* -------------------- MACARENA HOTFIX PACK -------------------- */
+/* Nu atinge codul tău. Rulează doar dacă nu e deja inițializat.  */
+(() => {
+    if (window.__MACARENA_HOTFIX__) return;
+    window.__MACARENA_HOTFIX__ = true;
+
+    // ---------- DOM helpers ----------
+    const $ = (sel) => document.querySelector(sel);
+    const on = (el, ev, fn) => el && el.addEventListener(ev, fn, { passive: true });
+
+    // ---------- Elemente din UI ----------
+    const elRoom = $('#room');
+    const elJoin = $('#join');
+    const elShare = $('#share');
+    const elCenter = $('#centerMe');
+    const elRoomLink = $('#roomLink');
+    const elRoomStatus = $('#roomStatus');
+    const elShareSta = $('#shareStatus');
+
+    // ---------- HARTĂ (reuse dacă există) ----------
+    let map = window.__MACARENA_MAP__;
+    if (!map) {
+        map = L.map('map', { zoomControl: true });
+        window.__MACARENA_MAP__ = map;
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        // un loc default rezonabil până aflăm poziția
+        map.setView([45.754, 21.226], 13);
+
+        requestAnimationFrame(() => map.invalidateSize());
+        window.addEventListener('resize', () => map.invalidateSize());
+        document.addEventListener('transitionend', (e) => {
+            if (e.target.closest('.panel, .topbar')) map.invalidateSize();
+        });
+    }
+
+    // ---------- STARE SHARING ----------
+    let watchId = null;
+    let youMarker = null;
+    let youAcc = null;
+    let joinedRoom = null;
+
+    // mic util: afișează status jos
+    const setRoomStatus = (t) => { if (elRoomStatus) elRoomStatus.textContent = t || ''; };
+    const setShareStatus = (t) => { if (elShareSta) elShareSta.textContent = t || ''; };
+
+    // ---------- JOIN ROOM ----------
+    function updateInviteLink() {
+        if (!elRoomLink) return;
+        const url = new URL(location.href);
+        url.searchParams.set('room', joinedRoom || '');
+        // normalizează spre index fără index.html în URL
+        const nice = url.toString().replace(/index\.html(\?|$)/, '$1');
+        elRoomLink.textContent = nice;
+    }
+
+    function joinRoom(roomName) {
+        joinedRoom = (roomName || '').trim();
+        if (!joinedRoom) { setRoomStatus(''); updateInviteLink(); return; }
+        localStorage.setItem('macarena.room', joinedRoom);
+        setRoomStatus(`Camera: ${joinedRoom}`);
+        updateInviteLink();
+    }
+
+    on(elJoin, 'click', () => joinRoom(elRoom && elRoom.value));
+
+    // auto-complete din ?room= sau din ultimele preferințe
+    (function prefillRoom() {
+        const sp = new URLSearchParams(location.search);
+        const fromUrl = sp.get('room');
+        const fromLs = localStorage.getItem('macarena.room');
+        const value = fromUrl || fromLs || '';
+        if (elRoom && !elRoom.value && value) elRoom.value = value;
+        if (value) joinRoom(value);
+    })();
+
+    // ---------- CENTER ME ----------
+    on(elCenter, 'click', () => {
+        if (youMarker) map.setView(youMarker.getLatLng(), Math.max(map.getZoom(), 16), { animate: true });
+    });
+
+    // ---------- START/STOP SHARING ----------
+    async function startSharing() {
+        if (!('geolocation' in navigator)) {
+            setShareStatus('Geolocația nu este disponibilă pe acest dispozitiv.');
+            return;
+        }
+        if (watchId !== null) {
+            // toggle: STOP
+            navigator.geolocation.clearWatch(watchId);
+            watchId = null;
+            setShareStatus('Sharing oprit.');
+            if (elShare) elShare.textContent = 'Start sharing';
+            return;
+        }
+        // START
+        setShareStatus('Pornesc sharing-ul… permite accesul la locație.');
+        if (elShare) elShare.textContent = 'Stop sharing';
+
+        watchId = navigator.geolocation.watchPosition(
+            (pos) => {
+                const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+
+                if (!youMarker) {
+                    youMarker = L.marker([lat, lng]).addTo(map);
+                    youMarker.bindTooltip('Tu', { permanent: true, direction: 'top', offset: [0, -8] });
+                } else {
+                    youMarker.setLatLng([lat, lng]);
+                }
+
+                if (!youAcc) {
+                    youAcc = L.circle([lat, lng], { radius: accuracy, weight: 1, fillOpacity: 0.08 });
+                    youAcc.addTo(map);
+                } else {
+                    youAcc.setLatLng([lat, lng]);
+                    youAcc.setRadius(accuracy);
+                }
+
+                // centrează prima dată; apoi nu mai forțăm camera
+                if (!startSharing._centeredOnce) {
+                    startSharing._centeredOnce = true;
+                    map.setView([lat, lng], Math.max(map.getZoom(), 16));
+                }
+
+                setShareStatus(`Sharing activ • precizie ~${Math.round(accuracy)} m`);
+                // TODO: aici putem publica în cameră când conectăm backendul/transportul (Supabase/Ably/WebRTC)
+                // publishPosition(joinedRoom, { lat, lng, accuracy, t: Date.now() });
+            },
+            (err) => {
+                const msg = ({
+                    1: 'Acces la locație refuzat.',
+                    2: 'Poziția este indisponibilă.',
+                    3: 'Timeout la obținerea poziției.'
+                })[err.code] || 'Eroare necunoscută la geolocalizare.';
+                setShareStatus(msg);
+                if (elShare) elShare.textContent = 'Start sharing';
+                watchId = null;
+            },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+        );
+    }
+
+    on(elShare, 'click', startSharing);
+
+    // ---------- QUALITY OF LIFE ----------
+    // cache-busting simplu: dacă ai probleme cu actualizări din cache, adaugă ?v=DATA pe <script src="./app.js?v=YYYY-MM-DD">
+    // elShare/elJoin să aibă aria-pressed corespunzător
+    const setPressed = (btn, state) => btn && btn.setAttribute('aria-pressed', state ? 'true' : 'false');
+    on(elShare, 'click', () => setPressed(elShare, watchId !== null));
+
+    // expune ptr. debug
+    window.__macarena = Object.assign(window.__macarena || {}, {
+        joinRoom, startSharing, state: () => ({ joinedRoom, watchId, youMarker: !!youMarker })
+    });
+})();
