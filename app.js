@@ -1,886 +1,489 @@
-﻿// ====== Supabase client (browser-only, ESM) ======
-import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-
-// >>> completează cu datele tale (le-am pus deja din ce mi-ai dat)
+﻿/* =========================
+   CONFIG
+========================= */
 const SUPABASE_URL = "https://ndxjdmkeounxliifpbyw.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5keGpkbWtlb3VueGxpaWZwYnl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTcyNTAxMjcsImV4cCI6MjA3MjgyNjEyN30.tzBnFZiFdPzqlSKiqx6uPMpZvHdSF1D8m7DXQx5E0I4";
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON, {
-    auth: {
-        persistSession: true,
-        detectSessionInUrl: true, // important pentru callback-ul OAuth/magic link
-        flowType: "pkce"
-    }
-});
+// dacă tabelele sunt în schema "macarena", lasă 'macarena'; dacă e în public, pune 'public'
+const DB_SCHEMA = "macarena";
 
-// ====== UI refs ======
-const el = {
-    room: document.getElementById('room'),
-    join: document.getElementById('join'),
-    share: document.getElementById('share'),
-    centerMe: document.getElementById('centerMe'),
-    authStatus: document.getElementById('authStatus'),
-    email: document.getElementById('email'),
-    sendLink: document.getElementById('sendLink'),
-    signOut: document.getElementById('signOut'),
-    googleBtn: document.getElementById('googleBtn'),
-    roomStatus: document.getElementById('roomStatus'),
-    shareStatus: document.getElementById('shareStatus'),
-    roomLink: document.getElementById('roomLink'),
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+/* =========================
+   STATE
+========================= */
+let map;
+let me = null;              // supabase user
+let myMarker = null;
+let myPath = null;
+let myTrailLayer = null;
+let watchId = null;
+let saveTimer = null;
+let lastPos = null;
+
+let visibility = "global";  // 'global' | 'private'
+let currentRoom = "";
+const markers = new Map();  // user_id -> Leaflet marker
+
+// SOS hold
+const HOLD_MS = 3000;
+let holdTimer = null;
+let holdInterval = null;
+let holdStart = 0;
+
+/* =========================
+   UI REFS
+========================= */
+const $ = (id) => document.getElementById(id);
+
+const ui = {
+    // profil
+    profilePhoto: $('profilePhoto'),
+    profileName: $('profileName'),
+    photoInput: $('photoInput'),
+    saveProfile: $('saveProfileBtn'),
+
+    // auth
+    googleBtn: $('btnGoogle'),
+    magicEmail: $('magicEmail'),
+    magicBtn: $('btnMagic'),
+    phone: $('phoneInput'),
+    smsOtpBtn: $('btnSmsOtp'),
+    otp: $('otpInput'),
+    smsConfirm: $('btnSmsConfirm'),
+    signOut: $('btnSignOut'),
+    status: $('authStatus'),
+
+    // vizibilitate & room
+    visGlobal: $('visGlobal'),
+    visPrivate: $('visPrivate'),
+    room: $('room'),
+    joinBtn: $('btnJoin'),
+    leaveBtn: $('btnLeave'),
+    inviteLink: $('inviteLink'),
+    copyBtn: $('btnCopy'),
+
+    // share
+    startBtn: $('btnStart'),
+    stopBtn: $('btnStop'),
+    centerBtn: $('btnCenter'),
+
+    // alerte
+    sosBtn: $('btnSOS'),
+    sosCounter: $('sosCounter'),
+    checkinBtn: $('btnCheckin'),
+    alertSound: $('alertSound'),
+
+    // live
+    members: $('members'),
+
+    // traseu
+    trailLoad: $('btnTrailLoad'),
+    trailClear: $('btnTrailClear'),
 };
 
-// ====== Map (Leaflet) ======
-const map = L.map('map', { zoomControl: true }).setView([45.9432, 24.9668], 6);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '&copy; OpenStreetMap'
-}).addTo(map);
+/* =========================
+   MAP
+========================= */
+function initMap() {
+    map = L.map('map', { preferCanvas: true }).setView([45.9432, 24.9668], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, attribution: '© OpenStreetMap'
+    }).addTo(map);
 
-const markers = new Map();
-function upsertMarker(uid, { lat, lng, name, ts, isSelf }) {
-    const label = name || uid?.slice?.(0, 6) || 'user';
-    const text = `${label}${isSelf ? ' (eu)' : ''}<br>${new Date(ts).toLocaleTimeString()}`;
-    if (markers.has(uid)) {
-        const m = markers.get(uid);
-        m.setLatLng([lat, lng]).bindPopup(text);
+    // centrează pe user dacă permite
+    try {
+        navigator.geolocation.getCurrentPosition(p => {
+            const { latitude: lat, longitude: lng } = p.coords;
+            map.setView([lat, lng], 14);
+        });
+    } catch { }
+}
+
+/* =========================
+   HELPERS
+========================= */
+function nowISO() { return new Date().toISOString(); }
+function isoHoursAgo(h) { return new Date(Date.now() - h * 3600 * 1000).toISOString(); }
+
+function normalIcon() {
+    return L.icon({
+        iconUrl: "https://cdn.jsdelivr.net/gh/pointhi/leaflet-color-markers@master/img/marker-icon-blue.png",
+        iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34],
+        shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+        shadowSize: [41, 41]
+    });
+}
+function alertDivIcon() { return L.divIcon({ className: "marker-alert" }); }
+
+function setMarker(userId, lat, lng, opts = {}) {
+    let m = markers.get(userId);
+    if (!m) {
+        m = L.marker([lat, lng], { icon: normalIcon() }).addTo(map);
+        markers.set(userId, m);
     } else {
-        const m = L.marker([lat, lng]).addTo(map).bindPopup(text);
-        markers.set(uid, m);
+        m.setLatLng([lat, lng]);
+    }
+    if (opts.alert) {
+        m.setIcon(alertDivIcon());
+        if (m._t) clearTimeout(m._t);
+        m._t = setTimeout(() => m.setIcon(normalIcon()), 10 * 60 * 1000);
+    }
+    if (opts.popup) { m.bindPopup(opts.popup).openPopup(); }
+    return m;
+}
+
+/* =========================
+   PROFILE
+========================= */
+async function ensureProfile(user) {
+    const { data } = await sb.schema(DB_SCHEMA).from('profiles').select('*').eq('id', user.id).maybeSingle();
+    if (!data) {
+        await sb.schema(DB_SCHEMA).from('profiles').upsert({ id: user.id, name: "", photo_url: "" });
+        return { name: "", photo_url: "" };
+    }
+    return data;
+}
+async function saveProfile() {
+    if (!me) return;
+    const name = ui.profileName.value.trim();
+    await sb.schema(DB_SCHEMA).from('profiles').upsert({ id: me.id, name, photo_url: ui.profilePhoto.src || "" });
+}
+async function uploadPhoto(file) {
+    if (!me || !file) return;
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const path = `avatars/${me.id}.${ext}`;
+    const { error } = await sb.storage.from('public').upload(path, file, { upsert: true });
+    if (!error) {
+        const { data } = sb.storage.from('public').getPublicUrl(path);
+        ui.profilePhoto.src = data.publicUrl;
+        await saveProfile();
     }
 }
-function removeMissing(keepSet) {
-    for (const uid of Array.from(markers.keys())) {
-        if (!keepSet.has(uid)) {
-            const m = markers.get(uid); map.removeLayer(m); markers.delete(uid);
-        }
-    }
-}
 
-// ====== State ======
-let session = null;
-let currentUser = null;
-let roomId = null;
-let watchId = null;
-let realtimeChannel = null;
-let lastSent = 0;
-
-// ====== Helpers ======
-function setStatus(where, msg) {
-    if (where === 'share') el.shareStatus.textContent = msg;
-    else if (where === 'room') el.roomStatus.textContent = msg;
-    else el.authStatus.textContent = msg;
-}
-function getRoomFromURL() {
-    const u = new URL(location.href);
-    return u.searchParams.get('room');
-}
-function setRoomToURL(id) {
-    const u = new URL(location.href);
-    u.searchParams.set('room', id);
-    history.replaceState(null, '', u.toString());
-    const link = `${u.origin}${u.pathname}?room=${encodeURIComponent(id)}`;
-    el.roomLink.textContent = link;
-}
-const round = (n, p = 5) => Number(n.toFixed(p));
-
-// ====== Auth (UI + fluxuri) ======
+/* =========================
+   AUTH
+========================= */
 async function refreshAuthUI() {
-    const { data: { session: s } } = await supabase.auth.getSession();
-    session = s;
-    currentUser = s?.user || null;
-    if (currentUser) {
-        setStatus('auth', `Autentificat ca: ${currentUser.email}`);
+    const { data: { user } } = await sb.auth.getUser();
+    me = user || null;
+    if (me) {
+        ui.status.textContent = `Autentificat: ${me.email || me.phone || me.id}`;
+        const prof = await ensureProfile(me);
+        ui.profileName.value = prof.name || "";
+        ui.profilePhoto.src = prof.photo_url || "";
     } else {
-        setStatus('auth', 'Neautentificat. Poți folosi Google sau magic link (email).');
+        ui.status.textContent = 'Neautentificat';
+        ui.profileName.value = "";
+        ui.profilePhoto.src = "";
     }
 }
-await refreshAuthUI();
-supabase.auth.onAuthStateChange((_evt, _ses) => refreshAuthUI());
 
-// Google OAuth
-el.googleBtn.addEventListener('click', async () => {
-    // IMPORTANT: redirectTo = URL-ul public al site-ului tău pe GitHub Pages
-    const redirectTo = "https://razvancodreanu.github.io/Macarena/";
-    const { error } = await supabase.auth.signInWithOAuth({
+ui.googleBtn.onclick = async () => {
+    await sb.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo } // Supabase va face hop prin /auth/v1/callback și revine aici
+        options: { redirectTo: location.href.split('#')[0] }
     });
+};
+ui.magicBtn.onclick = async () => {
+    const email = ui.magicEmail.value.trim();
+    if (!email) return alert('Introdu email');
+    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.href.split('#')[0] } });
+    if (error) alert(error.message); else alert('Ți-am trimis linkul pe email.');
+};
+ui.smsOtpBtn.onclick = async () => {
+    const phone = ui.phone.value.trim();
+    if (!phone) return alert('Telefon lipsă (+40...)');
+    const { error } = await sb.auth.signInWithOtp({ phone });
+    if (error) alert(error.message); else alert('Cod SMS trimis.');
+};
+ui.smsConfirm.onclick = async () => {
+    const phone = ui.phone.value.trim();
+    const token = ui.otp.value.trim();
+    if (!phone || !token) return alert('Telefon/cod lipsă');
+    const { error } = await sb.auth.verifyOtp({ phone, token, type: 'sms' });
     if (error) alert(error.message);
-});
-
-// Magic link
-el.sendLink.addEventListener('click', async () => {
-    const email = (el.email.value || '').trim();
-    if (!email) { alert('Introdu o adresă de email.'); return; }
-    const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: "https://razvancodreanu.github.io/Macarena/" }
-    });
-    if (error) alert(error.message);
-    else alert('Ți-am trimis un magic link. Verifică emailul și revino la pagină.');
-});
-
-// Sign out
-el.signOut.addEventListener('click', async () => {
-    await supabase.auth.signOut();
-    currentUser = null;
     await refreshAuthUI();
-});
+};
+ui.signOut.onclick = async () => { await sb.auth.signOut(); await refreshAuthUI(); };
 
-// ====== Rooms / Realtime ======
-async function loadInitial(room) {
-    const { data, error } = await supabase
-        .from('locations')
-        .select('*')
-        .eq('room_id', room);
+sb.auth.onAuthStateChange(async () => { await refreshAuthUI(); });
 
-    if (error) { setStatus('room', `Eroare load: ${error.message}`); return; }
+ui.photoInput.onchange = (e) => uploadPhoto(e.target.files?.[0]);
+ui.saveProfile.onclick = saveProfile;
 
-    const keep = new Set();
-    for (const row of data || []) {
-        keep.add(row.user_id);
-        if (row.lat && row.lng) {
-            upsertMarker(row.user_id, {
-                lat: row.lat, lng: row.lng, name: row.name,
-                ts: row.ts || new Date().toISOString(),
-                isSelf: currentUser && row.user_id === currentUser.id
-            });
-        }
-    }
-    removeMissing(keep);
-}
+/* =========================
+   VISIBILITY / ROOMS
+========================= */
+ui.visGlobal.onchange = () => { visibility = 'global'; rebuildInvite(); reloadLocationsView(); };
+ui.visPrivate.onchange = () => { visibility = 'private'; rebuildInvite(); reloadLocationsView(); };
 
-async function subscribeRoom(room) {
-    if (realtimeChannel) {
-        await supabase.removeChannel(realtimeChannel);
-        realtimeChannel = null;
-    }
+ui.joinBtn.onclick = () => {
+    currentRoom = ui.room.value.trim();
+    rebuildInvite();
+    reloadLocationsView();
+};
+ui.leaveBtn.onclick = () => {
+    currentRoom = "";
+    rebuildInvite();
+    reloadLocationsView();
+};
+ui.copyBtn.onclick = async () => {
+    if (!ui.inviteLink.value) rebuildInvite();
+    await navigator.clipboard.writeText(ui.inviteLink.value);
+    alert('Link copiat.');
+};
 
-    realtimeChannel = supabase
-        .channel(`room:${room}`)
-        .on('postgres_changes',
-            { event: '*', schema: 'public', table: 'locations', filter: `room_id=eq.${room}` },
-            (payload) => {
-                const row = payload.new || payload.old;
-                if (!row) return;
-                if (payload.eventType === 'DELETE') return;
-                if (row.lat && row.lng) {
-                    upsertMarker(row.user_id, {
-                        lat: row.lat, lng: row.lng, name: row.name,
-                        ts: row.ts, isSelf: currentUser && row.user_id === currentUser.id
-                    });
-                }
-            })
-        .subscribe((status) => {
-            setStatus('room', `Room "${room}" realtime: ${status}`);
-        });
-}
-
-async function joinRoom(id) {
-    roomId = (id || '').trim();
-    if (!roomId) { setStatus('room', 'Alege un room id (ex: friends)'); return; }
-    setRoomToURL(roomId);
-    await loadInitial(roomId);
-    await subscribeRoom(roomId);
-}
-el.join.addEventListener('click', () => joinRoom(el.room.value));
-
-// Deep-link room din URL, dacă există
-const urlRoom = getRoomFromURL();
-if (urlRoom) { el.room.value = urlRoom; joinRoom(urlRoom); }
-
-// ====== Share on/off ======
-function startSharing() {
-    if (!currentUser) { alert('Te rog loghează-te înainte de sharing.'); return; }
-    if (!roomId) { alert('Mai întâi intră într-o cameră (Join).'); return; }
-    if (!('geolocation' in navigator)) { alert('Browserul nu are Geolocation.'); return; }
-    if (watchId) return;
-
-    watchId = navigator.geolocation.watchPosition(async pos => {
-        const { latitude, longitude, accuracy } = pos.coords;
-        const now = new Date().toISOString();
-        const nowMs = Date.now();
-        if (nowMs - lastSent < 5000) return; // ~o dată la 5s
-        lastSent = nowMs;
-
-        const lat = round(latitude, 5);
-        const lng = round(longitude, 5);
-
-        const { error } = await supabase
-            .from('locations')
-            .upsert({
-                room_id: roomId,
-                user_id: currentUser.id,
-                name: currentUser.email,
-                lat, lng, acc: Math.round(accuracy),
-                ts: now
-            }, { onConflict: 'room_id,user_id' });
-
-        if (error) { setStatus('share', `Eroare: ${error.message}`); return; }
-
-        upsertMarker(currentUser.id, { lat, lng, name: currentUser.email, ts: now, isSelf: true });
-        if (!map._centeredOnce) { map.setView([lat, lng], 15); map._centeredOnce = true; }
-        setStatus('share', `Sharing ON (±${Math.round(accuracy)} m)`);
-    }, err => {
-        setStatus('share', `Eroare geolocație: ${err.message}`);
-    }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 });
-
-    el.share.textContent = 'Stop sharing';
-    el.share.classList.add('danger');
-}
-
-function stopSharing() {
-    if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
-    el.share.textContent = 'Start sharing';
-    el.share.classList.remove('danger');
-    setStatus('share', 'Sharing OFF');
-}
-
-el.share.addEventListener('click', () => watchId ? stopSharing() : startSharing());
-el.centerMe.addEventListener('click', () => {
-    if (!('geolocation' in navigator)) return;
-    navigator.geolocation.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 15));
-});
-/* -------------------- MACARENA HOTFIX PACK -------------------- */
-/* Nu atinge codul tău. Rulează doar dacă nu e deja inițializat.  */
-(() => {
-    if (window.__MACARENA_HOTFIX__) return;
-    window.__MACARENA_HOTFIX__ = true;
-
-    // ---------- DOM helpers ----------
-    const $ = (sel) => document.querySelector(sel);
-    const on = (el, ev, fn) => el && el.addEventListener(ev, fn, { passive: true });
-
-    // ---------- Elemente din UI ----------
-    const elRoom = $('#room');
-    const elJoin = $('#join');
-    const elShare = $('#share');
-    const elCenter = $('#centerMe');
-    const elRoomLink = $('#roomLink');
-    const elRoomStatus = $('#roomStatus');
-    const elShareSta = $('#shareStatus');
-
-    // ---------- HARTĂ (reuse dacă există) ----------
-    let map = window.__MACARENA_MAP__;
-    if (!map) {
-        map = L.map('map', { zoomControl: true });
-        window.__MACARENA_MAP__ = map;
-
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '&copy; OpenStreetMap contributors'
-        }).addTo(map);
-
-        // un loc default rezonabil până aflăm poziția
-        map.setView([45.754, 21.226], 13);
-
-        requestAnimationFrame(() => map.invalidateSize());
-        window.addEventListener('resize', () => map.invalidateSize());
-        document.addEventListener('transitionend', (e) => {
-            if (e.target.closest('.panel, .topbar')) map.invalidateSize();
-        });
-    }
-
-    // ---------- STARE SHARING ----------
-    let watchId = null;
-    let youMarker = null;
-    let youAcc = null;
-    let joinedRoom = null;
-
-    // mic util: afișează status jos
-    const setRoomStatus = (t) => { if (elRoomStatus) elRoomStatus.textContent = t || ''; };
-    const setShareStatus = (t) => { if (elShareSta) elShareSta.textContent = t || ''; };
-
-    // ---------- JOIN ROOM ----------
-    function updateInviteLink() {
-        if (!elRoomLink) return;
+function rebuildInvite() {
+    if (visibility === 'private' && currentRoom) {
         const url = new URL(location.href);
-        url.searchParams.set('room', joinedRoom || '');
-        // normalizează spre index fără index.html în URL
-        const nice = url.toString().replace(/index\.html(\?|$)/, '$1');
-        elRoomLink.textContent = nice;
+        url.searchParams.set('room', currentRoom);
+        ui.inviteLink.value = url.toString();
+    } else {
+        ui.inviteLink.value = "";
     }
+}
 
-    function joinRoom(roomName) {
-        joinedRoom = (roomName || '').trim();
-        if (!joinedRoom) { setRoomStatus(''); updateInviteLink(); return; }
-        localStorage.setItem('macarena.room', joinedRoom);
-        setRoomStatus(`Camera: ${joinedRoom}`);
-        updateInviteLink();
-    }
+/* =========================
+   SHARE LOCATION (5s)
+========================= */
+ui.startBtn.onclick = () => {
+    if (!navigator.geolocation) return alert('Geolocația nu este suportată.');
+    if (watchId) return;
+    myPath = myPath || L.polyline([], { color: '#4dc4ff', weight: 4 }).addTo(map);
 
-    on(elJoin, 'click', () => joinRoom(elRoom && elRoom.value));
-
-    // auto-complete din ?room= sau din ultimele preferințe
-    (function prefillRoom() {
-        const sp = new URLSearchParams(location.search);
-        const fromUrl = sp.get('room');
-        const fromLs = localStorage.getItem('macarena.room');
-        const value = fromUrl || fromLs || '';
-        if (elRoom && !elRoom.value && value) elRoom.value = value;
-        if (value) joinRoom(value);
-    })();
-
-    // ---------- CENTER ME ----------
-    on(elCenter, 'click', () => {
-        if (youMarker) map.setView(youMarker.getLatLng(), Math.max(map.getZoom(), 16), { animate: true });
+    watchId = navigator.geolocation.watchPosition(onPos, onPosErr, {
+        enableHighAccuracy: true, maximumAge: 0, timeout: 15000
     });
+    saveTimer = setInterval(saveCurrentLocation, 5000);
+};
+ui.stopBtn.onclick = () => {
+    if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+    if (saveTimer) { clearInterval(saveTimer); saveTimer = null; }
+};
+ui.centerBtn.onclick = () => {
+    if (myMarker) { map.setView(myMarker.getLatLng(), 15); }
+};
 
-    // ---------- START/STOP SHARING ----------
-    async function startSharing() {
-        if (!('geolocation' in navigator)) {
-            setShareStatus('Geolocația nu este disponibilă pe acest dispozitiv.');
-            return;
-        }
-        if (watchId !== null) {
-            // toggle: STOP
-            navigator.geolocation.clearWatch(watchId);
-            watchId = null;
-            setShareStatus('Sharing oprit.');
-            if (elShare) elShare.textContent = 'Start sharing';
-            return;
-        }
-        // START
-        setShareStatus('Pornesc sharing-ul… permite accesul la locație.');
-        if (elShare) elShare.textContent = 'Stop sharing';
-
-        watchId = navigator.geolocation.watchPosition(
-            (pos) => {
-                const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-
-                if (!youMarker) {
-                    youMarker = L.marker([lat, lng]).addTo(map);
-                    youMarker.bindTooltip('Tu', { permanent: true, direction: 'top', offset: [0, -8] });
-                } else {
-                    youMarker.setLatLng([lat, lng]);
-                }
-
-                if (!youAcc) {
-                    youAcc = L.circle([lat, lng], { radius: accuracy, weight: 1, fillOpacity: 0.08 });
-                    youAcc.addTo(map);
-                } else {
-                    youAcc.setLatLng([lat, lng]);
-                    youAcc.setRadius(accuracy);
-                }
-
-                // centrează prima dată; apoi nu mai forțăm camera
-                if (!startSharing._centeredOnce) {
-                    startSharing._centeredOnce = true;
-                    map.setView([lat, lng], Math.max(map.getZoom(), 16));
-                }
-
-                setShareStatus(`Sharing activ • precizie ~${Math.round(accuracy)} m`);
-                // TODO: aici putem publica în cameră când conectăm backendul/transportul (Supabase/Ably/WebRTC)
-                // publishPosition(joinedRoom, { lat, lng, accuracy, t: Date.now() });
-            },
-            (err) => {
-                const msg = ({
-                    1: 'Acces la locație refuzat.',
-                    2: 'Poziția este indisponibilă.',
-                    3: 'Timeout la obținerea poziției.'
-                })[err.code] || 'Eroare necunoscută la geolocalizare.';
-                setShareStatus(msg);
-                if (elShare) elShare.textContent = 'Start sharing';
-                watchId = null;
-            },
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-        );
+function onPos(p) {
+    const { latitude: lat, longitude: lng, accuracy } = p.coords;
+    if (!myMarker) {
+        myMarker = L.marker([lat, lng], { icon: normalIcon(), title: 'Eu' }).addTo(map);
+        map.setView([lat, lng], 15);
+    } else {
+        myMarker.setLatLng([lat, lng]);
     }
+    if (myPath) myPath.addLatLng([lat, lng]);
+    lastPos = { lat, lng, accuracy, at: nowISO() };
+}
+function onPosErr(e) { console.warn('geo', e); }
 
-    on(elShare, 'click', startSharing);
+async function saveCurrentLocation() {
+    if (!me || !lastPos) return;
+    const payload = {
+        user_id: me.id,
+        lat: lastPos.lat,
+        lng: lastPos.lng,
+        accuracy: lastPos.accuracy ?? null,
+        visibility,
+        room: visibility === 'private' ? (currentRoom || null) : null,
+        created_at: nowISO()
+    };
+    // salvează în locations + history
+    await sb.schema(DB_SCHEMA).from('locations').insert(payload);
+    await sb.schema(DB_SCHEMA).from('locations_history').insert(payload);
+}
 
-    // ---------- QUALITY OF LIFE ----------
-    // cache-busting simplu: dacă ai probleme cu actualizări din cache, adaugă ?v=DATA pe <script src="./app.js?v=YYYY-MM-DD">
-    // elShare/elJoin să aibă aria-pressed corespunzător
-    const setPressed = (btn, state) => btn && btn.setAttribute('aria-pressed', state ? 'true' : 'false');
-    on(elShare, 'click', () => setPressed(elShare, watchId !== null));
+/* =========================
+   RELOAD + REALTIME LOCATIONS
+========================= */
+async function reloadLocationsView() {
+    // curăță marker-ele altora (păstrează-l pe al meu)
+    for (const [uid, m] of markers) { if (!me || uid !== me.id) { map.removeLayer(m); } }
+    const selfMarker = me ? markers.get(me.id) : null;
+    markers.clear();
+    if (selfMarker) markers.set(me.id, selfMarker);
 
-    // expune ptr. debug
-    window.__macarena = Object.assign(window.__macarena || {}, {
-        joinRoom, startSharing, state: () => ({ joinedRoom, watchId, youMarker: !!youMarker })
+    let q = sb.schema(DB_SCHEMA).from('locations').select('user_id, lat, lng, visibility, room, created_at');
+    if (visibility === 'private') {
+        if (!currentRoom) return; else q = q.eq('room', currentRoom);
+    } else {
+        q = q.is('room', null);
+    }
+    const { data } = await q.order('created_at', { ascending: false }).limit(200);
+    data?.forEach(r => {
+        if (me && r.user_id === me.id) return;
+        setMarker(r.user_id, r.lat, r.lng);
     });
-})();
-/* ---------------- MACARENA GEO V2 (reliable) ---------------- */
-(() => {
-    if (window.__MACARENA_GEO_V2__) return;
-    window.__MACARENA_GEO_V2__ = true;
+}
 
-    const $ = s => document.querySelector(s);
-    const on = (el, ev, fn, opt) => el && el.addEventListener(ev, fn, opt || { passive: true });
-
-    // Elemente (folosim aceleași ID-uri din UI-ul tău)
-    const btnShare = $('#share');
-    const btnCenter = $('#centerMe');
-    const outShare = $('#shareStatus') || { textContent: '' }; // fallback
-    const outRoom = $('#roomStatus') || { textContent: '' };
-
-    // Harta (reuse dacă există)
-    let map = window.__MACARENA_MAP__;
-    if (!map) {
-        map = L.map('map', { zoomControl: true });
-        window.__MACARENA_MAP__ = map;
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
-        }).addTo(map);
-        map.setView([45.754, 21.226], 13);
-        requestAnimationFrame(() => map.invalidateSize());
-        window.addEventListener('resize', () => map.invalidateSize());
-    }
-
-    // Layer-ul tău (mereu deasupra)
-    const youLayer = window.__YOU_LAYER__ || L.layerGroup().addTo(map);
-    window.__YOU_LAYER__ = youLayer;
-
-    let youMarker = null;
-    let youAcc = null;
-    let watchId = null;
-    let centeredOnce = false;
-
-    function logStatus(t) { outShare.textContent = t; console.debug('[MACARENA]', t); }
-
-    function upsertYou(lat, lng, acc) {
-        if (!youMarker) {
-            youMarker = L.marker([lat, lng], { zIndexOffset: 1000 }).addTo(youLayer);
-            youMarker.bindTooltip('Tu', { permanent: true, direction: 'top', offset: [0, -8] });
+// realtime subscribes
+const channel = sb
+    .channel('macarena-live')
+    .on('postgres_changes', { event: 'INSERT', schema: DB_SCHEMA, table: 'locations' }, payload => {
+        const r = payload.new;
+        // filtrare vizibilitate
+        if (visibility === 'private') {
+            if (r.room !== currentRoom) return;
         } else {
-            youMarker.setLatLng([lat, lng]);
-            youMarker.setZIndexOffset(1000);
+            if (r.room !== null) return;
         }
-        if (!youAcc) {
-            youAcc = L.circle([lat, lng], { radius: acc || 25, weight: 1, fillOpacity: .08 });
-            youAcc.addTo(youLayer);
-        } else {
-            youAcc.setLatLng([lat, lng]);
-            if (acc) youAcc.setRadius(acc);
-        }
-        if (!centeredOnce) {
-            centeredOnce = true;
-            map.setView([lat, lng], Math.max(map.getZoom(), 16));
-        }
+        if (me && r.user_id === me.id) return;
+        setMarker(r.user_id, r.lat, r.lng);
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: DB_SCHEMA, table: 'alerts' }, payload => {
+        handleIncomingAlert(payload.new);
+    })
+    .subscribe();
+
+/* =========================
+   TRAIL (24h)
+========================= */
+ui.trailLoad.onclick = async () => {
+    if (!me) return alert('Autentifică-te');
+    if (myTrailLayer) { map.removeLayer(myTrailLayer); myTrailLayer = null; }
+
+    let q = sb.schema(DB_SCHEMA).from('locations_history')
+        .select('lat,lng,created_at')
+        .eq('user_id', me.id)
+        .gte('created_at', isoHoursAgo(24))
+        .order('created_at', { ascending: true });
+
+    if (visibility === 'private') {
+        if (!currentRoom) return alert('Ești pe mod Cameră. Intră într-o cameră.');
+        q = q.eq('room', currentRoom);
+    } else {
+        q = q.is('room', null);
     }
 
-    function startWatch() {
-        if (!('geolocation' in navigator)) {
-            logStatus('Geolocația nu este disponibilă în acest browser.');
-            return;
-        }
-        // dacă e deja pornit -> oprește (toggle)
-        if (watchId !== null) {
-            navigator.geolocation.clearWatch(watchId);
-            watchId = null;
-            btnShare && (btnShare.textContent = 'Start sharing');
-            btnShare && btnShare.setAttribute('aria-pressed', 'false');
-            logStatus('Sharing oprit.');
-            return;
-        }
+    const { data, error } = await q;
+    if (error) { console.warn(error.message); return; }
+    if (!data || !data.length) return alert('Nu există puncte în ultimele 24h.');
 
-        centeredOnce = false;
-        btnShare && (btnShare.textContent = 'Stop sharing');
-        btnShare && btnShare.setAttribute('aria-pressed', 'true');
-        logStatus('Pornește sharing… acordă permisiunea de locație.');
+    const latlngs = data.map(p => [p.lat, p.lng]);
+    myTrailLayer = L.polyline(latlngs, { color: '#00d4aa', weight: 4, opacity: .85 }).addTo(map);
+    map.fitBounds(myTrailLayer.getBounds(), { padding: [24, 24] });
+};
+ui.trailClear.onclick = () => {
+    if (myTrailLayer) { map.removeLayer(myTrailLayer); myTrailLayer = null; }
+};
 
-        // 1) Fix instant (o singură citire) ca să apară markerul imediat
-        navigator.geolocation.getCurrentPosition(
-            (pos) => {
-                const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-                upsertYou(lat, lng, accuracy);
-                logStatus(`Fix inițial: ~${Math.round(accuracy)} m`);
-            },
-            (err) => {
-                console.warn('getCurrentPosition error', err);
-                // fallback: Leaflet locate (unele device-uri dau rateu la primul fix)
-                map.once('locationfound', (e) => {
-                    upsertYou(e.latlng.lat, e.latlng.lng, e.accuracy);
-                    logStatus(`Fix (fallback): ~${Math.round(e.accuracy)} m`);
-                });
-                map.once('locationerror', () => logStatus('Nu am putut obține o poziție inițială.'));
-                map.locate({ setView: false, enableHighAccuracy: true, timeout: 8000 });
-            },
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-        );
+/* =========================
+   ALERTS (SOS & CHECK-IN)
+========================= */
+async function sendAlert(type) {
+    if (!me) return alert('Autentifică-te');
+    if (!myMarker) { return alert('Pornește "Start sharing" ca să avem coordonate.'); }
+    const { lat, lng } = myMarker.getLatLng();
+    const row = {
+        user_id: me.id, type,
+        lat, lng, visibility,
+        room: visibility === 'private' ? (currentRoom || null) : null,
+        created_at: nowISO()
+    };
+    await sb.schema(DB_SCHEMA).from('alerts').insert(row);
+}
 
-        // 2) Urmărire continuă
-        watchId = navigator.geolocation.watchPosition(
-            (pos) => {
-                const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-                upsertYou(lat, lng, accuracy);
-                logStatus(`Sharing activ • ~${Math.round(accuracy)} m`);
-            },
-            (err) => {
-                const msg = ({
-                    1: 'Acces la locație refuzat.',
-                    2: 'Poziția indisponibilă.',
-                    3: 'Timeout la obținerea poziției.'
-                }[err.code]) ||
-                    'Eroare necunoscută la geolocalizare.';
-                logStatus(msg);
-                // Nu lăsăm butonul în stare „Stop” dacă watch a căzut
-                btnShare && (btnShare.textContent = 'Start sharing');
-                btnShare && btnShare.setAttribute('aria-pressed', 'false');
-                watchId = null;
-            },
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-        );
+function handleIncomingAlert(a) {
+    // filtrare
+    if (visibility === 'private') {
+        if (a.room !== currentRoom) return;
+    } else {
+        if (a.room !== null) return;
+    }
+    // sunet + marker roșu pulsant
+    ui.alertSound.currentTime = 0;
+    ui.alertSound.play().catch(() => { });
+    setMarker(a.user_id, a.lat, a.lng, { alert: true, popup: `ALERTĂ: ${a.type}` });
+}
+
+// SOS: scurt = selector; lung = 3s → SOS
+function startHold() {
+    if (holdTimer) return;
+    holdStart = Date.now();
+    ui.sosCounter.classList.remove('hidden');
+    updateCountdown();
+    holdInterval = setInterval(updateCountdown, 100);
+    holdTimer = setTimeout(async () => {
+        stopHoldUI();
+        await sendAlert('SOS');
+    }, HOLD_MS);
+}
+function stopHoldUI() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+    if (holdInterval) { clearInterval(holdInterval); holdInterval = null; }
+    ui.sosCounter.classList.add('hidden');
+}
+function updateCountdown() {
+    const left = Math.max(0, HOLD_MS - (Date.now() - holdStart));
+    const sec = Math.ceil(left / 1000);
+    ui.sosCounter.textContent = sec > 0 ? `${sec}` : 'SOS!';
+}
+function openAlertPicker() {
+    const t = prompt('Tip alertă: (Răpire, Amenințare cu cuțit, Viol, Intimidare, Agresiune fizică, Bătaie, Urmăritor dubios, Tentativă furt, Furt, Injurături)');
+    if (!t) return;
+    sendAlert(t);
+}
+
+ui.sosBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); startHold(); });
+ui.sosBtn.addEventListener('pointerup', (e) => {
+    e.preventDefault();
+    if (holdTimer) { stopHoldUI(); openAlertPicker(); } // short press
+});
+ui.sosBtn.addEventListener('pointerleave', () => stopHoldUI());
+ui.checkinBtn.onclick = () => sendAlert('Check-in');
+
+/* =========================
+   MEMBERS LIST (simplu)
+========================= */
+async function refreshMembers() {
+    let q = sb.schema(DB_SCHEMA).from('locations')
+        .select('user_id,created_at,room,visibility')
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+    if (visibility === 'private') {
+        if (!currentRoom) { ui.members.textContent = '-'; return; }
+        q = q.eq('room', currentRoom);
+    } else {
+        q = q.is('room', null);
     }
 
-    function centerMe() {
-        if (youMarker) {
-            map.setView(youMarker.getLatLng(), Math.max(map.getZoom(), 16), { animate: true });
-            return;
-        }
-        // Dacă nu e marker încă, ia o poziție unică și centrează
-        if ('geolocation' in navigator) {
-            navigator.geolocation.getCurrentPosition(
-                (pos) => {
-                    const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-                    upsertYou(lat, lng, accuracy);
-                    map.setView([lat, lng], Math.max(map.getZoom(), 16), { animate: true });
-                    logStatus(`Centrat pe fix unic • ~${Math.round(accuracy)} m`);
-                },
-                () => logStatus('Nu am putut centra – fără acces la locație.'),
-                { enableHighAccuracy: true, maximumAge: 10000, timeout: 8000 }
-            );
-        }
+    const { data } = await q;
+    if (!data || !data.length) { ui.members.textContent = '-'; return; }
+    const ids = [...new Set(data.map(r => r.user_id))];
+
+    const { data: profs } = await sb.schema(DB_SCHEMA).from('profiles').select('id,name').in('id', ids);
+    const nameById = new Map((profs || []).map(p => [p.id, p.name]));
+
+    ui.members.innerHTML = data
+        .filter((v, i, a) => a.findIndex(x => x.user_id === v.user_id) === i)
+        .map(r => {
+            const n = nameById.get(r.user_id) || r.user_id;
+            const when = new Date(r.created_at).toLocaleTimeString();
+            return `<div>${n} <span class="note">• ${when}</span></div>`;
+        }).join('');
+}
+setInterval(refreshMembers, 8000);
+
+/* =========================
+   BOOT
+========================= */
+function applyRoomFromURL() {
+    const room = new URLSearchParams(location.search).get('room');
+    if (room) {
+        visibility = 'private';
+        ui.visPrivate.checked = true;
+        currentRoom = room;
+        ui.room.value = room;
+        rebuildInvite();
     }
+}
 
-    on(btnShare, 'click', startWatch);
-    on(btnCenter, 'click', centerMe);
-
-    // Permissions API – feedback imediat despre starea permisiunii
-    if (navigator.permissions && navigator.permissions.query) {
-        navigator.permissions.query({ name: 'geolocation' }).then((p) => {
-            const update = () => {
-                outRoom.textContent = `Permisiune locație: ${p.state}`; // info mic în UI
-                if (p.state === 'denied') logStatus('Permisiunea de locație este „Denied”. Mergi în setările browserului și permite.');
-            };
-            update();
-            p.onchange = update;
-        }).catch(() => { });
-    }
-
-    // Expunere pentru debug rapid
-    window.__macarena = Object.assign(window.__macarena || {}, {
-        centerMe, startWatch,
-        geoState: () => ({ watchId, hasMarker: !!youMarker })
-    });
-})();
-
-
-/* ============ MACARENA: marker stabil + Public mode ============ */
-(() => {
-    if (window.__MACARENA_PUBLIC_V1__) return;
-    window.__MACARENA_PUBLIC_V1__ = true;
-
-    const $ = s => document.querySelector(s);
-    const on = (el, ev, fn, opt) => el && el.addEventListener(ev, fn, opt || { passive: true });
-
-    // Harta
-    const map = window.__MACARENA_MAP__;
-    if (!map) return console.warn('Map not ready.');
-
-    // Layere
-    const youLayer = window.__YOU_LAYER__ || L.layerGroup().addTo(map);
-    const peopleLayer = window.__PEOPLE_LAYER__ || L.layerGroup().addTo(map);
-    window.__YOU_LAYER__ = youLayer; window.__PEOPLE_LAYER__ = peopleLayer;
-
-    // ICONS
-    const youIcon = L.divIcon({
-        className: 'macarena-you',
-        html: '',
-        iconSize: [14, 14], iconAnchor: [7, 7], tooltipAnchor: [0, -10]
-    });
-    const userIcon = (label, opts = {}) => L.divIcon({
-        className: `macarena-user ${opts.sos ? 'macarena-sos' : ''}`,
-        html: (label || '').slice(0, 2),
-        iconSize: [22, 22], iconAnchor: [11, 11], tooltipAnchor: [0, -14]
-    });
-
-    // STARE
-    let watchId = null;
-    let youMarker = null, youAcc = null, lastPos = null;
-    let joinedRoom = (new URLSearchParams(location.search).get('room')) || localStorage.getItem('macarena.room') || 'public';
-
-    // UI existente
-    const btnShare = $('#share');
-    const btnCenter = $('#centerMe');
-    const inpRoom = $('#room');
-    const statusOut = $('#shareStatus') || { textContent: '' };
-    const roomOut = $('#roomStatus') || { textContent: '' };
-
-    // ——— Public by default (toți văd pe toți) ———
-    if (inpRoom && !inpRoom.value) inpRoom.value = joinedRoom;
-    roomOut.textContent = `Camera: ${joinedRoom} (public înseamnă vizibil tuturor)`;
-
-    // Local render pt „TU”
-    function upsertYou(lat, lng, acc) {
-        lastPos = { lat, lng, acc };
-        if (!youMarker) {
-            youMarker = L.marker([lat, lng], { icon: youIcon, zIndexOffset: 1000 }).addTo(youLayer);
-            youMarker.bindTooltip('Tu', { permanent: true, direction: 'top', offset: [0, -10] });
-        } else {
-            youMarker.setLatLng([lat, lng]);
-        }
-        if (!youAcc) {
-            youAcc = L.circle([lat, lng], { radius: acc || 25, weight: 1, fillOpacity: .08 });
-            youAcc.addTo(youLayer);
-        } else {
-            youAcc.setLatLng([lat, lng]); if (acc) youAcc.setRadius(acc);
-        }
-    }
-
-    // „Center me” – funcționează și fără share pornit (folosește fix unic)
-    function centerMe() {
-        if (lastPos) {
-            map.setView([lastPos.lat, lastPos.lng], Math.max(map.getZoom(), 16), { animate: true });
-            return;
-        }
-        if ('geolocation' in navigator) {
-            navigator.geolocation.getCurrentPosition(
-                p => {
-                    const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
-                    map.setView([c.latitude, c.longitude], 16, { animate: true });
-                    statusOut.textContent = `Centrat (~${Math.round(c.accuracy)} m)`;
-                },
-                () => statusOut.textContent = 'Nu am putut centra (permisiune?).',
-                { enableHighAccuracy: true, maximumAge: 10000, timeout: 8000 }
-            );
-        }
-    }
-
-    // Start/Stop sharing – mai robust (fix instant + watch)
-    function toggleShare() {
-        if (!('geolocation' in navigator)) {
-            statusOut.textContent = 'Geolocație indisponibilă.';
-            return;
-        }
-        if (watchId !== null) {
-            navigator.geolocation.clearWatch(watchId); watchId = null;
-            btnShare && (btnShare.textContent = 'Start sharing', btnShare.setAttribute('aria-pressed', 'false'));
-            statusOut.textContent = 'Sharing oprit.'; return;
-        }
-
-        btnShare && (btnShare.textContent = 'Stop sharing', btnShare.setAttribute('aria-pressed', 'true'));
-        statusOut.textContent = 'Pornește share…';
-
-        // 1) fix instant
-        navigator.geolocation.getCurrentPosition(
-            p => {
-                const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
-                if (!map.__centeredOnce) { map.__centeredOnce = true; map.setView([c.latitude, c.longitude], 16); }
-                statusOut.textContent = `Fix inițial (~${Math.round(c.accuracy)} m)`; publishSelf();
-            },
-            e => { console.warn('getCurrentPosition', e); statusOut.textContent = 'Nu am putut lua fix-ul inițial.'; },
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-        );
-
-        // 2) urmărește continuu
-        watchId = navigator.geolocation.watchPosition(
-            p => {
-                const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
-                statusOut.textContent = `Sharing activ • ~${Math.round(c.accuracy)} m`; publishSelf();
-            },
-            e => {
-                const txt = ({ 1: 'Acces refuzat', 2: 'Indisponibil', 3: 'Timeout' })[e.code] || 'Eroare geo';
-                statusOut.textContent = txt; btnShare && (btnShare.textContent = 'Start sharing', btnShare.setAttribute('aria-pressed', 'false')); watchId = null;
-            },
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-        );
-    }
-
-    on(btnCenter, 'click', centerMe);
-    on(btnShare, 'click', toggleShare);
-
-    /* ---------- TRANSPORT ---------- 
-       0) fallback local (fără backend): BroadcastChannel – merge între tab-urile tale.
-       1) real-time pentru toți: vezi blocul SUPABASE de mai jos (rapid, non-Firebase).
-    */
-    const chanName = `macarena:${joinedRoom || 'public'}`;
-    const bc = ('BroadcastChannel' in window) ? new BroadcastChannel(chanName) : null;
-
-    function publishSelf(kind = 'pos') {
-        if (!lastPos) return;
-        const payload = {
-            kind,
-            id: localStorage.getItem('macarena.uid') || (() => {
-                const id = Math.random().toString(36).slice(2);
-                localStorage.setItem('macarena.uid', id); return id;
-            })(),
-            name: (localStorage.getItem('macarena.name') || '').slice(0, 2).toUpperCase(),
-            lat: lastPos.lat, lng: lastPos.lng, acc: lastPos.acc || null, t: Date.now()
-        };
-        // BroadcastChannel (dev)
-        bc && bc.postMessage(payload);
-        // Supabase/Ably/etc. – vezi mai jos (enable când adaugi chei)
-        supa.publish(payload); // no-op dacă nu e configurat
-    }
-
-    // Render „alți utilizatori”
-    const others = new Map(); // id -> { marker, accCircle, last }
-    function renderOther(msg) {
-        if (!msg || msg.id === localStorage.getItem('macarena.uid')) return;
-        const key = msg.id;
-        const label = msg.name || 'U';
-        const pos = L.latLng(msg.lat, msg.lng);
-        let entry = others.get(key);
-        if (!entry) {
-            const m = L.marker(pos, { icon: userIcon(label, { sos: msg.kind === 'sos' }), zIndexOffset: 900 }).addTo(peopleLayer);
-            m.bindTooltip(label, { permanent: true, direction: 'top', offset: [0, -12] });
-            const c = L.circle(pos, { radius: msg.acc || 25, weight: 1, fillOpacity: .05 }).addTo(peopleLayer);
-            entry = { marker: m, acc: c, last: msg };
-            others.set(key, entry);
-        } else {
-            entry.marker.setLatLng(pos);
-            entry.marker.setIcon(userIcon(label, { sos: msg.kind === 'sos' }));
-            entry.acc.setLatLng(pos); if (msg.acc) entry.acc.setRadius(msg.acc);
-            entry.last = msg;
-        }
-    }
-
-    bc && (bc.onmessage = (e) => renderOther(e.data));
-
-    // ——— SUPABASE (opțional, pt. „1000 logați”) ———
-    // Completează SUPABASE_URL și SUPABASE_ANON_KEY și apoi creează tabelul:
-    // SQL: create table if not exists positions (room text, id text, name text, lat double precision, lng double precision, acc double precision, kind text, t bigint);
-    //      create index on positions (room, t desc);
-    //      -- RLS permis doar insert/select pe "room = 'public'" (sau după nevoi).
-    const supa = (() => {
-        const SUPABASE_URL = '';      // <- pune url-ul proiectului tău
-        const SUPABASE_KEY = '';      // <- pune anon key
-        if (!SUPABASE_URL || !SUPABASE_KEY) return { publish() { }, ready: false };
-        // mini client fără SDK mare
-        const headers = { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` };
-        async function publish(payload) {
-            try {
-                await fetch(`${SUPABASE_URL}/rest/v1/positions`, {
-                    method: 'POST', headers, body: JSON.stringify([{ room: joinedRoom, ...payload }])
-                });
-            } catch (e) { console.warn('supa publish', e); }
-        }
-        // stream realtime (channel)
-        // Notă: dacă preferi, poți folosi supabase-js pentru .channel('realtime:public:positions')
-        // Aici, pentru simplitate, facem polling ușor (merge la 1000 useri cu index corect).
-        let lastT = Date.now() - 1000 * 60;
-        setInterval(async () => {
-            try {
-                const q = new URLSearchParams({
-                    select: 'id,name,lat,lng,acc,kind,t',
-                    room: `eq.${joinedRoom}`,
-                    t: `gt.${lastT}`,
-                    order: 't.desc',
-                    limit: '1000'
-                });
-                const res = await fetch(`${SUPABASE_URL}/rest/v1/positions?${q}`, { headers });
-                if (!res.ok) return;
-                const arr = await res.json();
-                arr.reverse().forEach(renderOther);
-                if (arr.length) lastT = Math.max(lastT, arr[arr.length - 1].t);
-            } catch (e) { }
-        }, 2000);
-
-        return { publish, ready: true };
-    })();
-
-    // Expunere pt. debug
-    window.__macarena = Object.assign(window.__macarena || {}, {
-        centerMe, toggleShare,
-        publicRoom: joinedRoom, transportReady: !!supa.ready
-    });
-})();
-
-
-
-/* ===== MACARENA: GEO V3 – fix robust la primul fix + center ===== */
-(() => {
-    if (window.__MACARENA_GEO_V3__) return; window.__MACARENA_GEO_V3__ = true;
-
-    const $ = s => document.querySelector(s);
-    const btnShare = $('#share');
-    const btnCenter = $('#centerMe');
-    const statusOut = $('#shareStatus') || { textContent: '' };
-    const map = window.__MACARENA_MAP__;
-    const youLayer = window.__YOU_LAYER__ || L.layerGroup().addTo(map); window.__YOU_LAYER__ = youLayer;
-
-    // icon tu (dacă n-a fost definit deja)
-    const youIcon = L.divIcon({ className: 'macarena-you', html: '', iconSize: [14, 14], iconAnchor: [7, 7], tooltipAnchor: [0, -10] });
-
-    let youMarker = null, youAcc = null, lastPos = null, watchId = null, awaitingFirstFix = false;
-
-    function upsertYou(lat, lng, acc) {
-        lastPos = { lat, lng, acc };
-        if (!youMarker) {
-            youMarker = L.marker([lat, lng], { icon: youIcon, zIndexOffset: 1000 }).addTo(youLayer);
-            youMarker.bindTooltip('Tu', { permanent: true, direction: 'top', offset: [0, -10] });
-        } else youMarker.setLatLng([lat, lng]);
-
-        if (!youAcc) {
-            youAcc = L.circle([lat, lng], { radius: acc || 25, weight: 1, fillOpacity: .08 }).addTo(youLayer);
-        } else { youAcc.setLatLng([lat, lng]); if (acc) youAcc.setRadius(acc); }
-    }
-
-    function centerMe() {
-        // centrează imediat dacă avem poziție
-        if (lastPos) { map.setView([lastPos.lat, lastPos.lng], Math.max(map.getZoom(), 16), { animate: true }); return; }
-
-        // dacă încă așteptăm primul fix… cere un fix unic
-        if ('geolocation' in navigator) {
-            statusOut.textContent = 'Caut poziția pentru centrare…';
-            navigator.geolocation.getCurrentPosition(
-                p => {
-                    const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
-                    map.setView([c.latitude, c.longitude], 16, { animate: true });
-                    statusOut.textContent = `Centrat (~${Math.round(c.accuracy)} m)`;
-                },
-                () => { statusOut.textContent = 'Nu am putut centra (permisiune?).'; },
-                { enableHighAccuracy: true, maximumAge: 10000, timeout: 8000 }
-            );
-        }
-    }
-
-    function toggleShare() {
-        if (!('geolocation' in navigator)) { statusOut.textContent = 'Geolocație indisponibilă.'; return; }
-
-        // STOP
-        if (watchId !== null) {
-            navigator.geolocation.clearWatch(watchId); watchId = null; awaitingFirstFix = false;
-            btnShare && (btnShare.textContent = 'Start sharing', btnShare.setAttribute('aria-pressed', 'false'));
-            statusOut.textContent = 'Sharing oprit.'; return;
-        }
-
-        // START (debounce ca să nu spamăm cereri)
-        if (awaitingFirstFix) return;
-        awaitingFirstFix = true;
-        btnShare && (btnShare.textContent = 'Stop sharing', btnShare.setAttribute('aria-pressed', 'true'));
-        statusOut.textContent = 'Pornește share… acordă permisiunea.';
-
-        // 1) fix unic imediat
-        navigator.geolocation.getCurrentPosition(
-            p => {
-                const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
-                map.__centeredOnce || (map.__centeredOnce = true, map.setView([c.latitude, c.longitude], 16));
-                statusOut.textContent = `Fix inițial (~${Math.round(c.accuracy)} m)`;
-                awaitingFirstFix = false;
-            },
-            e => { console.warn('getCurrentPosition', e); statusOut.textContent = 'Nu am putut lua fix-ul inițial.'; awaitingFirstFix = false; },
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-        );
-
-        // 2) watch continuu
-        watchId = navigator.geolocation.watchPosition(
-            p => {
-                const c = p.coords; upsertYou(c.latitude, c.longitude, c.accuracy);
-                statusOut.textContent = `Sharing activ • ~${Math.round(c.accuracy)} m`;
-            },
-            e => {
-                const txt = ({ 1: 'Acces refuzat', 2: 'Indisponibil', 3: 'Timeout' })[e.code] || 'Eroare geo';
-                statusOut.textContent = txt; btnShare && (btnShare.textContent = 'Start sharing', btnShare.setAttribute('aria-pressed', 'false'));
-                watchId = null; awaitingFirstFix = false;
-            },
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-        );
-    }
-
-    btnCenter && btnCenter.addEventListener('click', centerMe, { passive: true });
-    btnShare && btnShare.addEventListener('click', toggleShare, { passive: true });
-
-    // expunere debug
-    (window.__macarena = window.__macarena || {}).baseState = () => ({ watchId, awaitingFirstFix, hasMarker: !!youMarker, lastPos });
-})();
+document.addEventListener('DOMContentLoaded', async () => {
+    initMap();
+    applyRoomFromURL();
+    await refreshAuthUI();
+    await reloadLocationsView();
+    await refreshMembers();
+});

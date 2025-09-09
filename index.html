@@ -2,71 +2,134 @@
 <html lang="ro">
 <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
-    <title>Macarena · Live Location</title>
-    <link rel="stylesheet" href="./style.css" />
-    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-    <!-- Leaflet CSS -->
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Macarena • Live Location</title>
+
+    <!-- Leaflet -->
     <link rel="stylesheet"
           href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-          crossorigin="" />
-</head>
+          crossorigin="">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            crossorigin=""
+            defer></script>
 
+    <!-- Supabase JS v2 -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+
+    <!-- CSS cu cache-bust -->
+    <link rel="stylesheet" href="./style.css?v=5" />
+</head>
 <body>
     <header class="topbar">
-        <div class="brand">📍 Macarena • Live Location</div>
-        <div class="controls">
-            <input id="room" type="text" placeholder="ex: familia, echipa-42" />
-            <button id="join">Join</button>
-            <button id="share" class="secondary">Start sharing</button>
-            <button id="centerMe" class="secondary">Center me</button>
+        <div class="brand">Macarena • Live Location</div>
+        <div class="room-inline">
+            <input id="room" type="text" placeholder="Nume cameră (ex: familia)" />
+            <button id="btnJoin">Join</button>
+            <button id="btnLeave" class="ghost">Leave</button>
+            <button id="btnCenter">Center me</button>
         </div>
     </header>
 
-    <main id="map"></main>
+    <!-- Harta pe stânga -->
+    <main id="map" aria-label="Hartă"></main>
 
-    <aside class="panel">
-        <h3>Autentificare</h3>
-        <p id="authStatus">Status: verific…</p>
+    <!-- Panoul din dreapta / jos (mobil) -->
+    <aside id="panel" aria-label="Panou">
+        <!-- Profil -->
+        <section class="card">
+            <h3>Profil</h3>
+            <div class="row">
+                <img id="profilePhoto" class="avatar" alt="avatar" />
+                <input id="profileName" type="text" placeholder="Nume și prenume" />
+            </div>
+            <div class="row">
+                <label class="btn">
+                    Încarcă poză
+                    <input id="photoInput" type="file" accept="image/*" hidden />
+                </label>
+                <button id="saveProfileBtn" class="ghost">Salvează</button>
+            </div>
+        </section>
 
-        <div class="auth">
-            <!-- OAuth Google -->
-            <button id="googleBtn" class="oauth google">
-                <svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true">
-                    <path fill="#EA4335" d="M24 9.5c3.35 0 6.36 1.15 8.73 3.41l6.55-6.55C35.63 2.5 30.2 0 24 0 14.6 0 6.53 5.37 2.56 13.17l7.64 5.93C12.01 13.61 17.53 9.5 24 9.5z" />
-                    <path fill="#4285F4" d="M46.5 24c0-1.56-.14-3.06-.41-4.5H24v9h12.7c-.55 2.93-2.2 5.42-4.7 7.08l7.2 5.57C43.9 37.9 46.5 31.45 46.5 24z" />
-                    <path fill="#FBBC05" d="M10.2 19.1l-7.64-5.93C.9 15.62 0 19.68 0 24c0 4.3.9 8.35 2.56 12.03l7.64-5.93C9.37 27.37 9 25.72 9 24s.37-3.37 1.2-4.9z" />
-                    <path fill="#34A853" d="M24 48c6.2 0 11.45-2.05 15.23-5.57l-7.2-5.57C29.88 38.2 27.16 39 24 39c-6.47 0-11.99-4.12-13.8-9.6l-7.64 5.93C6.53 42.63 14.6 48 24 48z" />
-                </svg>
-                Sign in with Google
-            </button>
+        <!-- Autentificare -->
+        <section class="card">
+            <h3>Autentificare</h3>
+            <div class="stack">
+                <button id="btnGoogle" class="btn-google">Sign in with Google</button>
+                <div class="row">
+                    <input id="magicEmail" type="email" placeholder="email pentru magic link" />
+                    <button id="btnMagic">Trimite link</button>
+                </div>
+                <div class="row">
+                    <input id="phoneInput" type="tel" placeholder="+40 7xx xxx xxx" />
+                    <button id="btnSmsOtp">SMS OTP</button>
+                </div>
+                <div class="row">
+                    <input id="otpInput" type="text" placeholder="Cod SMS" />
+                    <button id="btnSmsConfirm">Confirmă</button>
+                </div>
+                <button id="btnSignOut" class="ghost">Sign out</button>
+            </div>
+            <div id="authStatus" class="note">Neautentificat</div>
+        </section>
 
-            <!-- Magic link -->
-            <input id="email" type="email" placeholder="email pentru magic link" />
-            <button id="sendLink">Trimite link</button>
+        <!-- Vizibilitate -->
+        <section class="card">
+            <h3>Vizibilitate</h3>
+            <label class="inline"><input type="radio" name="vis" id="visGlobal" checked /> Global (toți)</label>
+            <label class="inline"><input type="radio" name="vis" id="visPrivate" /> Cameră privată</label>
+            <div class="row">
+                <input id="inviteLink" type="text" placeholder="Link invitație cameră" readonly />
+                <button id="btnCopy" class="ghost">Copy</button>
+            </div>
+        </section>
 
-            <button id="signOut" class="secondary">Sign out</button>
-        </div>
+        <!-- Share location -->
+        <section class="card">
+            <h3>Share location</h3>
+            <div class="row">
+                <button id="btnStart" class="ok">Start sharing</button>
+                <button id="btnStop" class="danger">Stop</button>
+            </div>
+            <small class="note">Permite locația în browser. Trimite la ~5 sec când se schimbă.</small>
+        </section>
 
-        <hr />
-        <div>
-            Link de invitat pentru cameră:
-            <div class="linkbox"><code id="roomLink">—</code></div>
-        </div>
+        <!-- Alerte -->
+        <section class="card">
+            <h3>Alerte</h3>
+            <div class="row">
+                <button id="btnSOS" class="sos" title="Scurt: alege tipul • Lung: 3 sec → SOS">SOS</button>
+                <span id="sosCounter" class="counter hidden">3</span>
+                <button id="btnCheckin">Check-in</button>
+            </div>
+        </section>
+
+        <!-- Live / Membri -->
+        <section class="card">
+            <h3>Live • Membri</h3>
+            <div id="members" class="list note">-</div>
+        </section>
+
+        <!-- Traseu -->
+        <section class="card">
+            <h3>Traseu (24h)</h3>
+            <div class="row">
+                <button id="btnTrailLoad" class="ghost">Încarcă</button>
+                <button id="btnTrailClear" class="ghost">Curăță</button>
+            </div>
+        </section>
+
+        <footer class="mini">
+            <small>schema: <b>macarena</b> • tabele: <i>profiles, locations, locations_history, alerts</i></small>
+        </footer>
     </aside>
 
-    <footer class="statusbar">
-        <span id="roomStatus"></span>
-        <span id="shareStatus"></span>
-    </footer>
+    <!-- Sunet alertă -->
+    <audio id="alertSound" preload="auto">
+        <source src="https://cdn.jsdelivr.net/gh/itsrealfarhan/sfx/siren-short.mp3" type="audio/mpeg" />
+    </audio>
 
-    <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-            crossorigin=""></script>
-
-    <!-- App -->
-    <script type="module" src="./app.js"></script>
+    <!-- JS cu cache-bust -->
+    <script src="./app.js?v=5" defer></script>
 </body>
 </html>

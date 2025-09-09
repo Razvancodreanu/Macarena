@@ -2,10 +2,11 @@
     --bg: #0b0d10;
     --fg: #e8eef3;
     --muted: #9fb3c8;
-    --accent: #60a5fa;
-    --danger: #ef4444;
     --panel: #12161b;
-    --border: #1f2933
+    --border: #1f2933;
+    --ok: #3ecf8e;
+    --danger: #ef4444;
+    --accent: #60a5fa;
 }
 
 * {
@@ -20,242 +21,241 @@ body {
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font: 500 15px/1.35 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif
+    font: 500 14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif
 }
 
 .topbar {
     position: fixed;
-    inset: 0 0 auto 0;
-    height: 56px;
+    left: 0;
+    right: 360px;
+    top: 0;
+    height: 46px;
     display: flex;
     align-items: center;
-    gap: 12px;
+    justify-content: space-between;
     padding: 0 12px;
-    background: var(--panel);
+    gap: 12px;
+    background: #0f141a;
     border-bottom: 1px solid var(--border);
-    z-index: 1000
+    z-index: 5;
 }
 
 .brand {
-    font-weight: 700
+    font-weight: 800;
+    color: var(--muted)
 }
 
-.controls {
+.room-inline {
+    display: flex;
+    gap: 8px;
+    align-items: center
+}
+
+    .room-inline input {
+        height: 30px;
+        padding: 0 10px;
+        border: 1px solid var(--border);
+        background: #0b1117;
+        color: var(--fg);
+        border-radius: 6px
+    }
+
+    .room-inline button {
+        height: 30px;
+        padding: 0 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: #151b22;
+        color: var(--fg);
+        cursor: pointer
+    }
+
+        .room-inline button.ghost {
+            background: transparent
+        }
+
+#map {
+    position: absolute;
+    top: 46px;
+    left: 0;
+    bottom: 0;
+    right: 360px;
+}
+
+#panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 360px;
+    overflow: auto;
+    padding: 10px;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+}
+
+.card {
+    background: #0f141a;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    margin: 10px 0;
+}
+
+    .card h3 {
+        margin: 0 0 10px 0;
+        font-size: 15px;
+        color: var(--muted)
+    }
+
+.row {
     display: flex;
     gap: 8px;
     align-items: center;
-    flex: 1
-}
-
-    .controls input {
-        background: #0f1318;
-        border: 1px solid var(--border);
-        color: var(--fg);
-        padding: 8px 10px;
-        border-radius: 8px;
-        min-width: 180px
-    }
-
-button {
-    border: 1px solid var(--border);
-    background: var(--accent);
-    color: #04121f;
-    font-weight: 700;
-    padding: 8px 12px;
-    border-radius: 8px;
-    cursor: pointer
-}
-
-    button.secondary {
-        background: #19212b;
-        color: var(--fg)
-    }
-
-    button.danger {
-        background: var(--danger);
-        color: #fff
-    }
-
-#map {
-    position: fixed;
-    top: 56px;
-    bottom: 0;
-    left: 0;
-    right: 340px
-}
-
-.leaflet-container {
-    background: #0d1117
-}
-
-.leaflet-control-zoom a {
-    color: #0d1117
-}
-
-.panel {
-    position: fixed;
-    top: 56px;
-    right: 0;
-    bottom: 28px;
-    width: 340px;
-    background: var(--panel);
-    border-left: 1px solid var(--border);
-    padding: 12px;
-    overflow: auto
-}
-
-.auth {
-    display: flex;
-    gap: 8px;
     flex-wrap: wrap
 }
 
-    .auth input {
-        flex: 1;
-        min-width: 180px;
-        background: #0f1318;
-        border: 1px solid var(--border);
-        color: var(--fg);
-        padding: 8px 10px;
-        border-radius: 8px
-    }
-
-.linkbox {
-    margin-top: 6px;
-    padding: 8px;
-    background: #0f1318;
-    border: 1px dashed var(--border);
-    border-radius: 6px;
-    overflow: auto
-}
-
-.statusbar {
-    position: fixed;
-    inset: auto 0 0 0;
-    height: 28px;
+.stack {
     display: flex;
-    gap: 16px;
-    align-items: center;
-    padding: 0 12px;
-    background: var(--panel);
-    border-top: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 12px;
-    overflow-x: auto;
-    white-space: nowrap
-}
-
-/* OAuth button */
-button.oauth {
-    display: inline-flex;
-    align-items: center;
+    flex-direction: column;
     gap: 8px
 }
 
-    button.oauth.google {
-        background: #fff;
-        color: #1f2937;
-        border-color: #374151
+input, button {
+    font: inherit
+}
+
+    input[type="text"], input[type="email"], input[type="tel"] {
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #0b1117;
+        color: var(--fg);
     }
 
-        button.oauth.google svg {
-            display: block
-        }
+button {
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #151b22;
+    color: var(--fg);
+    cursor: pointer;
+}
 
-@media (max-width:900px) {
-    #map {
-        right: 0;
-        bottom: 28px
+    button:hover {
+        filter: brightness(1.07)
     }
 
-    .panel {
-        position: fixed;
-        inset: auto 0 28px 0;
-        height: 220px;
-        width: auto;
-        border-left: none;
-        border-top: 1px solid var(--border)
+    button.ghost {
+        background: transparent
     }
-}
-/* Asigură înălțime pentru hartă pe orice layout */
-html, body {
-    height: 100%;
+
+.ok {
+    background: #102117;
+    border-color: #113b26;
+    color: #aef3c7
 }
 
-#map {
-    min-height: 320px;
+.danger {
+    background: #1c0f10;
+    border-color: #3b1620;
+    color: #ffb3b3
 }
 
-/* Dacă ai elemente decorative peste hartă, să nu blocheze clickurile */
-.overlay-decor {
-    pointer-events: none;
+.btn-google {
+    background: #fff;
+    color: #111;
+    border-color: #ddd
 }
-/* Marker – punct pulsant (TU) */
-.macarena-you {
+
+.avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: #0b1117;
+    border: 1px solid var(--border)
+}
+
+.note {
+    color: var(--muted)
+}
+
+.mini {
+    color: var(--muted);
+    text-align: center
+}
+
+.sos {
+    background: var(--danger);
+    color: #fff;
+    font-weight: 800;
+    letter-spacing: .5px
+}
+
+.counter {
+    background: #1c0d0d;
+    border: 1px solid #4b1818;
+    color: #ffbdbd;
+    padding: 4px 8px;
+    border-radius: 10px;
+    font-weight: 800;
+}
+
+.hidden {
+    display: none
+}
+
+.list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px
+}
+
+/* Marker alert pulsant */
+.marker-alert {
     width: 14px;
     height: 14px;
-    border-radius: 50%;
-    background: #2b7bff;
-    box-shadow: 0 0 0 2px #fff;
-    position: relative;
+    border-radius: 999px;
+    background: #ff2a2a;
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 rgba(255,42,42,.8);
+    animation: pulse 1.2s infinite;
 }
 
-    .macarena-you::after {
-        content: "";
-        position: absolute;
-        inset: -8px;
-        border: 2px solid rgba(43,123,255,.35);
-        border-radius: 50%;
-        animation: macarena-pulse 1.6s ease-out infinite;
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(255,42,42,.7)
     }
 
-@keyframes macarena-pulse {
-    from {
-        transform: scale(.6);
-        opacity: .8
+    70% {
+        box-shadow: 0 0 0 12px rgba(255,42,42,0)
     }
 
-    to {
-        transform: scale(1.6);
-        opacity: 0
+    100% {
+        box-shadow: 0 0 0 0 rgba(255,42,42,0)
     }
 }
 
-/* Marker – alți utilizatori (cu inițiale) */
-.macarena-user {
-    --bg: #ff4d8d;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: var(--bg);
-    color: #fff;
-    font: 700 11px/1 system-ui;
-    box-shadow: 0 0 0 2px #fff;
-    text-transform: uppercase;
-}
-
-/* Stare SOS vizibilă pentru toți */
-.macarena-sos {
-    --bg: #ff0033;
-    box-shadow: 0 0 0 2px #fff, 0 0 14px rgba(255,0,51,.6);
-    animation: macarena-sos 0.9s ease-in-out infinite;
-}
-
-@keyframes macarena-sos {
-    0%,100% {
-        transform: scale(1)
+/* Mobil: panou jos, hartă sus */
+@media (max-width: 900px) {
+    #panel {
+        width: 100%;
+        left: 0;
+        top: auto;
+        height: 50%;
+        bottom: 0
     }
 
-    50% {
-        transform: scale(1.14)
+    #map {
+        right: 0;
+        top: 46px;
+        height: 50%
     }
-}
 
-@media (prefers-reduced-motion: reduce) {
-    .macarena-you::after, .macarena-sos {
-        animation: none
+    .topbar {
+        right: 0
     }
 }
